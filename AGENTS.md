@@ -1,0 +1,1 @@
+*Use `rg` in bash instead of the glob or grep tools.*

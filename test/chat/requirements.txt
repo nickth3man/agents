@@ -1,0 +1,4 @@
+pocketflow>=0.0.2
+gradio>=5.29.1
+openai>=1.78.1
+python-dotenv>=1.0.0

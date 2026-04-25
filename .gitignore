@@ -89,6 +89,9 @@ Desktop.ini
 # Logs
 *.log
 
+# Ignore reference directory
+reference/
+
 # Ignore all files by default, then allow tracked files
 # Uncomment the next two lines for maximum strictness:
 # *
