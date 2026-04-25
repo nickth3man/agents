@@ -4,6 +4,8 @@ import time
 from queue import Queue
 
 from openai import OpenAI
+
+logging.basicConfig(level=logging.INFO)
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
@@ -94,7 +96,9 @@ def call_llm_stream(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": message})
 
+    logger.info("llm_stream connecting model=%s base_url=%s", model, base_url)
     stream = client.chat.completions.create(model=model, messages=messages, stream=True)
+    logger.info("llm_stream connected, awaiting chunks...")
 
     accumulated: list[str] = []
     token_count = 0

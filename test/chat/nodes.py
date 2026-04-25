@@ -63,7 +63,7 @@ Provide your best answer to the user's question. Be direct, practical, and actio
 Keep your response concise but complete."""
         
         if stream_queue is not None:
-            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queue=stream_queue)
+            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queues=[stream_queue] if stream_queue else None)
         return call_llm(prompt, system_prompt=self.SYSTEM_PROMPT)
 
     def post(self, shared, prep_res, exec_res):
@@ -109,7 +109,7 @@ Provide your best answer to the user's question, but be sure to:
 Keep your response concise but thorough."""
         
         if stream_queue is not None:
-            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queue=stream_queue)
+            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queues=[stream_queue] if stream_queue else None)
         return call_llm(prompt, system_prompt=self.SYSTEM_PROMPT)
 
     def post(self, shared, prep_res, exec_res):
@@ -156,7 +156,7 @@ Consider:
 Keep your response concise but insightful."""
         
         if stream_queue is not None:
-            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queue=stream_queue)
+            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queues=[stream_queue] if stream_queue else None)
         return call_llm(prompt, system_prompt=self.SYSTEM_PROMPT)
 
     def post(self, shared, prep_res, exec_res):
@@ -217,7 +217,7 @@ Produce a concise debate critique. For each model, identify:
 Format as a structured critique. Be specific and constructive."""
         
         if stream_queue is not None:
-            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queue=stream_queue)
+            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queues=[stream_queue] if stream_queue else None)
         return call_llm(prompt, system_prompt=self.SYSTEM_PROMPT)
 
     def post(self, shared, prep_res, exec_res):
@@ -285,7 +285,7 @@ Synthesize the above into ONE final answer for the user. You must:
 Return ONLY the final answer. Do not explain your judging process."""
         
         if stream_queue is not None:
-            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queue=stream_queue)
+            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queues=[stream_queue] if stream_queue else None)
         return call_llm(prompt, system_prompt=self.SYSTEM_PROMPT)
 
     def post(self, shared, prep_res, exec_res):
