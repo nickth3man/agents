@@ -221,3 +221,202 @@ The UI is built with **Gradio** (`gr.Blocks`) and served at the default port. A 
   5. Yields placeholder `"... *Debating* ..."` immediately, then polls `flow_queue` at 50 ms intervals.
   6. Once `flow_queue` signals done (`None`), reads the final answer from `chat_queue` and appends it as `"### Final Answer\n\n{final}"`.
 - Clear button resets the chatbot and generates a new `uuid.uuid4()` conversation ID.
+
+
+## New Feature: Argument Cartography — Visual Claim Graph
+
+### Overview
+
+Transform the linear debate transcript into an interactive **argument map** (claim graph). Each claim becomes a node; supports, refutations, and contradictions become directed edges. The user can click any claim to see who said it, explore supporting evidence, and navigate the debate spatially instead of reading a wall of text.
+
+### Why
+
+Research on deliberation and argumentation shows that **visual argument maps improve comprehension** and reduce cognitive load significantly compared to linear text transcripts. In a multi-agent debate where three models build on (or tear down) each other’s positions, a graph makes the *structure of reasoning* visible: what supports what, where the fault lines are, and how the models converge or diverge.
+
+### User Story
+
+- **US-7**: As a user, I want to see the debate rendered as an interactive claim graph so I can explore who said what, how claims relate, and where the key disagreements lie.
+
+### Architecture
+
+```mermaid
+flowchart TD
+    PrepareDebate[Prepare Debate Node] --> ParallelModels
+
+    subgraph ParallelModels[Parallel Models Node — asyncio.gather]
+        ModelA[Model A\nPragmatic Senior Engineer]
+        ModelB[Model B\nCautious Technical Lead]
+        ModelC[Model C\nUnconventional Systems Thinker]
+    end
+
+    ParallelModels --> DebateRound[Debate Round Node]
+    DebateRound --> Judge[Judge Node]
+    Judge --> ArgumentMapper[Argument Mapper Node]
+    ArgumentMapper --> SendFinalAnswer[Send Final Answer Node]
+```
+
+### New Components
+
+#### 1. Argument Mapper Node (`ArgumentMapper`)
+
+A new `AsyncNode` that runs **after** the Judge and **before** `SendFinalAnswer`.
+
+**Purpose**: Extract structured claims and relationships from the full debate transcript and produce a machine-readable argument graph.
+
+**Steps**:
+- *prep_async*: Load `debate_transcript` and `judge_answer` from session.
+- *exec_async*: Call `call_llm_stream` with a structured extraction prompt (`argument_mapper_system.txt`). The LLM returns a JSON object conforming to the `ArgumentGraph` Pydantic schema.
+- *post_async*: Save the graph to session as `argument_graph`. Put `"🗺️ Argument map generated"` into `flow_queue`. Return `"default"`.
+
+**ArgumentGraph Schema** (Pydantic):
+
+```python
+class Claim(BaseModel):
+    id: str
+    text: str
+    speaker: Literal["model_a", "model_b", "model_c", "judge"]
+    round: int
+    confidence: float  # 0.0–1.0, extracted or estimated
+
+class Edge(BaseModel):
+    from_id: str
+    to_id: str
+    relation: Literal["supports", "refutes", "qualifies", "asks"]
+    evidence: str  # brief quote or reasoning
+
+class ArgumentGraph(BaseModel):
+    nodes: list[Claim]
+    edges: list[Edge]
+```
+
+#### 2. Prompt File (`prompts/argument_mapper_system.txt`)
+
+System prompt for the extraction LLM:
+
+```
+You are an Argument Cartographer. Your job is to read a debate transcript and produce a structured claim graph.
+
+Rules:
+1. Extract every substantive claim made by each speaker.
+2. Identify relationships: supports, refutes, qualifies, or asks (Socratic).
+3. Include the judge's synthesis claims.
+4. Assign confidence scores based on how strongly the speaker defended the claim.
+5. Keep claim text under 20 words.
+6. Return ONLY valid JSON matching the ArgumentGraph schema.
+```
+
+#### 3. Frontend — Argument Graph Panel (`frontend/argument_graph.html` + `frontend/argument_graph.js`)
+
+A new right-hand panel (or modal overlay) that renders the graph using **Cytoscape.js** (lightweight, force-directed layout).
+
+**Features**:
+- **Force-directed layout**: Claims naturally cluster by speaker and round.
+- **Color coding**: Model A = blue, Model B = amber, Model C = purple, Judge = green.
+- **Edge styling**: Supports = solid green, Refutes = dashed red, Qualifies = dotted orange, Asks = dotted gray.
+- **Click-to-expand**: Clicking a claim opens a detail card showing the full text, speaker, round, and incoming/outgoing edges.
+- **Filter by speaker**: Toggle models on/off to see only certain voices.
+- **Zoom & pan**: Standard graph navigation.
+
+**HTML Structure** (`frontend/argument_graph.html`):
+
+```html
+<div id="argument-graph-panel" class="graph-panel">
+  <div class="graph-header">
+    <h3>Argument Cartography</h3>
+    <div class="graph-legend">
+      <span class="legend-item"><span class="dot blue"></span> Model A</span>
+      <span class="legend-item"><span class="dot amber"></span> Model B</span>
+      <span class="legend-item"><span class="dot purple"></span> Model C</span>
+      <span class="legend-item"><span class="dot green"></span> Judge</span>
+    </div>
+  </div>
+  <div id="cy" class="graph-canvas"></div>
+  <div id="claim-detail" class="claim-detail hidden">
+    <h4 id="detail-title"></h4>
+    <p id="detail-text"></p>
+    <div id="detail-meta"></div>
+  </div>
+</div>
+```
+
+**JavaScript** (`frontend/argument_graph.js`):
+
+```javascript
+function renderArgumentGraph(graphData) {
+  const cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: [
+      ...graphData.nodes.map(n => ({
+        data: { id: n.id, label: n.text, speaker: n.speaker, confidence: n.confidence }
+      })),
+      ...graphData.edges.map(e => ({
+        data: { source: e.from_id, target: e.to_id, relation: e.relation }
+      }))
+    ],
+    style: [
+      { selector: 'node', style: { 'label': 'data(label)', 'width': 40, 'height': 40 } },
+      { selector: 'node[speaker="model_a"]', style: { 'background-color': '#3b82f6' } },
+      { selector: 'node[speaker="model_b"]', style: { 'background-color': '#f59e0b' } },
+      { selector: 'node[speaker="model_c"]', style: { 'background-color': '#8b5cf6' } },
+      { selector: 'node[speaker="judge"]', style: { 'background-color': '#10b981' } },
+      { selector: 'edge[relation="supports"]', style: { 'line-color': '#22c55e', 'target-arrow-color': '#22c55e' } },
+      { selector: 'edge[relation="refutes"]', style: { 'line-color': '#ef4444', 'line-style': 'dashed', 'target-arrow-color': '#ef4444' } },
+    ],
+    layout: { name: 'cose', padding: 10 }
+  });
+
+  cy.on('tap', 'node', function(evt){
+    const node = evt.target;
+    showClaimDetail(node.data());
+  });
+}
+```
+
+#### 4. SSE Protocol Extension
+
+The argument graph is delivered via SSE as a single JSON payload after the judge phase:
+
+```python
+# In ArgumentMapper.post_async or main.py
+graph_json = json.dumps({"argument_graph": session["argument_graph"]})
+stream_queue.put(f"\x00GRAPH:{graph_json}\x00")
+```
+
+The SSE handler emits:
+
+```
+event: argument_graph
+data: {"nodes": [...], "edges": [...]}
+```
+
+The frontend listens for `argument_graph` events and calls `renderArgumentGraph()`.
+
+### Session State Update
+
+Session state after a full flow run now includes:
+
+```python
+session = {
+    # ... existing fields ...
+    "argument_graph": {
+        "nodes": [...],
+        "edges": [...]
+    },
+}
+```
+
+### File Changes Summary
+
+| File | Change |
+|---|---|
+| `nodes.py` | Add `ArgumentMapper` class |
+| `flow.py` | Wire `Judge >> ArgumentMapper >> SendFinalAnswer` |
+| `prompts/argument_mapper_system.txt` | New extraction prompt |
+| `frontend/argument_graph.html` | New graph panel markup |
+| `frontend/argument_graph.js` | Cytoscape.js rendering logic |
+| `frontend/styles.css` | Graph panel styles |
+| `main.py` | SSE handler: parse `\x00GRAPH:...\x00` sentinel, emit `argument_graph` event |
+
+### Rollback
+
+If the graph generation fails (malformed JSON, schema mismatch), the node catches the exception and passes an empty graph. The frontend detects empty graphs and hides the panel, falling back to the existing linear transcript view. The flow continues to `SendFinalAnswer` regardless.

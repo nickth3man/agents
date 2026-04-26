@@ -1,4 +1,4 @@
-"""PocketFlow Multi-Model Debate with Real-Time SSE Streaming — Editorial UI."""
+"""PocketFlow Multi-Model Debate — Conversational Rounds with Real-Time SSE Streaming."""
 
 import asyncio
 import json
@@ -31,37 +31,27 @@ from utils.observability import (
 import gradio as gr
 
 from flow import create_flow
+from nodes import DEBATE_ROUNDS, SPEAKER_ORDER, SPEAKER_SHORT, SPEAKER_LABELS
 from utils.conversation import delete_conversation
 
 # ---- Streaming infrastructure ----
 
 _active_stream_queues: dict[str, Queue] = {}
 _active_lock = threading.Lock()
-_active_lock = threading.Lock()
-
-
-# Map flow_queue thoughts → phase ids the front-end uses to route tokens
-PHASE_MAP = {
-    "🎯 Preparing debate context...": "prepare",
-    "✅ Model A (Direct & Practical) has responded": "after_a",
-    "✅ Model B (Cautious & Analytical) has responded": "after_b",
-    "✅ Model C (Creative & Alternative) has responded": "after_c",
-    "🔄 Debate round completed - models critiqued each other": "after_round",
-    "⚖️ Judge has synthesized the final answer": "after_judge",
-}
-
-# When phase X completes, the NEXT phase that will start streaming tokens
-NEXT_PHASE = {
-    "prepare": "model_a",
-    "after_a": "model_b",
-    "after_b": "model_c",
-    "after_c": "round",
-    "after_round": "judge",
-    "after_judge": "done",
-}
 
 PHASE_SENTINEL_PREFIX = "\x00PHASE:"
 PHASE_SENTINEL_SUFFIX = "\x00"
+
+
+def _all_phase_ids():
+    """Generate all possible phase ids for round N."""
+    phases = []
+    for r in range(DEBATE_ROUNDS):
+        prefix = f"round{r}_" if r > 0 else ""
+        for s in SPEAKER_ORDER:
+            phases.append(f"{prefix}{s}")
+    phases.append("judge")
+    return phases
 
 
 class SSEHandler(BaseHTTPRequestHandler):
@@ -95,7 +85,6 @@ class SSEHandler(BaseHTTPRequestHandler):
                         self.wfile.flush()
                         break
                     token_count += 1
-                    # Phase sentinels: "\x00PHASE:model_b\x00"
                     if isinstance(token, str) and token.startswith(PHASE_SENTINEL_PREFIX):
                         phase = token[len(PHASE_SENTINEL_PREFIX):].rstrip(PHASE_SENTINEL_SUFFIX)
                         payload = json.dumps({"phase": phase})
@@ -134,7 +123,7 @@ def add_user_message(message: str, history: list):
 
 
 async def _flow_runner(chat_flow, shared, flow_queue):
-    """Run the async flow; capture and report failures."""
+    """Run the async flow in a single pass — the flow itself handles multiple rounds."""
     tracer = get_tracer()
     conversation_id = shared.get("conversation_id")
     try:
@@ -148,7 +137,7 @@ async def _flow_runner(chat_flow, shared, flow_queue):
         tb = traceback.format_exc()
         log.error("flow_run_failed", exc_info=exc, traceback=tb)
         try:
-            flow_queue.put(f"💥 Flow error: {type(exc).__name__}: {exc}")
+            flow_queue.put(f"Flow error: {type(exc).__name__}: {exc}")
         finally:
             flow_queue.put(None)
             chat_q = shared.get("queue")
@@ -182,7 +171,6 @@ async def run_debate(history: list, request: gr.Request):
         with _active_lock:
             _active_stream_queues[client_host] = stream_queue
 
-        # Reset floor then kick off with the first phase marker
         stream_queue.put(f"{PHASE_SENTINEL_PREFIX}reset{PHASE_SENTINEL_SUFFIX}")
         stream_queue.put(f"{PHASE_SENTINEL_PREFIX}model_a{PHASE_SENTINEL_SUFFIX}")
 
@@ -196,7 +184,7 @@ async def run_debate(history: list, request: gr.Request):
         }
 
         chat_flow = create_flow()
-        # Run async flow in a background thread with its own event loop
+
         def run_async_flow():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -204,15 +192,26 @@ async def run_debate(history: list, request: gr.Request):
                 loop.run_until_complete(_flow_runner(chat_flow, shared, flow_queue))
             finally:
                 loop.close()
-        
+
         threading.Thread(target=run_async_flow, daemon=False, name="flow-runner").start()
 
-        history.append({"role": "assistant", "content": "_The floor is open. Three models will deliberate._"})
+        round_labels = []
+        for i, s in enumerate(SPEAKER_ORDER):
+            if i == 0:
+                round_labels.append(f"Round 1: {SPEAKER_LABELS[s]} opens")
+            else:
+                round_labels.append(f"Round 1: {SPEAKER_LABELS[s]} responds")
+        for r in range(1, DEBATE_ROUNDS):
+            for s in SPEAKER_ORDER:
+                round_labels.append(f"Round {r+1}: {SPEAKER_LABELS[s]}")
+
+        history.append({"role": "assistant", "content": "_The floor is open. Three models will deliberate in conversation._"})
         yield history
 
         flow_done = False
         thoughts: list[str] = []
         loop_iter = 0
+        completed_speakers = []
 
         while not flow_done:
             loop_iter += 1
@@ -224,7 +223,6 @@ async def run_debate(history: list, request: gr.Request):
                     flow_qsize=flow_queue.qsize(),
                 )
             changed = False
-            # Drain flow events first → translate to phase sentinels
             try:
                 while True:
                     thought = flow_queue.get_nowait()
@@ -232,15 +230,31 @@ async def run_debate(history: list, request: gr.Request):
                         flow_done = True
                         log.info("run_debate_flow_done")
                         break
+
+                    if thought == "preparing":
+                        thoughts.append("Preparing debate context...")
+                        changed = True
+                        flow_queue.task_done()
+                        continue
+
+                    if thought.startswith("speaker_done:"):
+                        parts = thought.split(":")
+                        speaker = parts[1]
+                        completed_speakers.append(speaker)
+                        short = SPEAKER_SHORT.get(speaker, speaker)
+                        round_num = parts[2] if len(parts) > 2 else "round0"
+                        thoughts.append(f"{short} has spoken ({round_num})")
+                        changed = True
+                        flow_queue.task_done()
+                        continue
+
+                    if thought == "judge_done":
+                        thoughts.append("Judge has synthesized the final answer")
+                        changed = True
+                        flow_queue.task_done()
+                        continue
+
                     thoughts.append(thought)
-                    log.info("run_debate_flow_event", thought=thought)
-                    phase_after = PHASE_MAP.get(thought)
-                    if phase_after:
-                        next_phase = NEXT_PHASE.get(phase_after)
-                        if next_phase and next_phase != "done":
-                            stream_queue.put(
-                                f"{PHASE_SENTINEL_PREFIX}{next_phase}{PHASE_SENTINEL_SUFFIX}"
-                            )
                     changed = True
                     flow_queue.task_done()
             except Empty:

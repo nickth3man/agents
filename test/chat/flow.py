@@ -1,31 +1,31 @@
-"""Async flow definition for parallel multi-model debate."""
+"""Async flow definition for sequential multi-round conversational debate."""
 
 from pocketflow import AsyncFlow
 
 from nodes import (
     PrepareDebate,
-    ParallelModels,
-    DebateRound,
-    Judge,
+    ConversationRound,
+    JudgeFinal,
     SendFinalAnswer,
+    DEBATE_ROUNDS,
 )
 
 
 def create_flow():
     """
-    Create and connect nodes into a parallel debate flow.
+    Create sequential conversation flow with conditional looping:
     
-    Flow: Prepare → ParallelModels (A+B+C concurrent) → DebateRound → Judge → SendFinalAnswer
+    Prepare → ConversationRound ──next_round──→ ConversationRound (loops)
+                                 └──to_judge──→ Judge → SendFinalAnswer
     """
-    prepare_debate = PrepareDebate()
-    parallel_models = ParallelModels()
-    debate_round = DebateRound()
-    judge = Judge()
-    send_final_answer = SendFinalAnswer()
+    prepare = PrepareDebate()
+    conversation = ConversationRound()
+    judge = JudgeFinal()
+    send = SendFinalAnswer()
 
-    prepare_debate >> parallel_models
-    parallel_models >> debate_round
-    debate_round >> judge
-    judge >> send_final_answer
+    prepare >> conversation
+    conversation.next(conversation, "next_round")  # loop back to self
+    conversation.next(judge, "to_judge")
+    judge >> send
 
-    return AsyncFlow(start=prepare_debate)
+    return AsyncFlow(start=prepare)

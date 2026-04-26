@@ -1,5 +1,4 @@
 (function() {
-  // Force light mode — this UI is light-only; Gradio picks up system dark mode otherwise
   function enforceLightMode() {
     if (document.body && document.body.classList.contains('dark')) {
       document.body.classList.remove('dark');
@@ -16,29 +15,44 @@
   var source = null;
   var _runComplete = false;
 
-  // phase ids → lane element ids
-  var LANE_IDS = {
-    model_a: 'lane-a',
-    model_b: 'lane-b',
-    model_c: 'lane-c',
-    round:   'lane-round',
-    judge:   'lane-judge'
+  // Phase → bubble element id mapping
+  // Round 0: model_a → bubble-model_a, etc.
+  // Round 1: round1_model_a → bubble-model_a_r1, etc.
+  // Judge: judge → bubble-judge
+  var BUBBLE_MAP = {
+    'model_a':       'bubble-model_a',
+    'model_b':       'bubble-model_b',
+    'model_c':       'bubble-model_c',
+    'round1_model_a': 'bubble-model_a_r1',
+    'round1_model_b': 'bubble-model_b_r1',
+    'round1_model_c': 'bubble-model_c_r1',
+    'judge':         'bubble-judge'
   };
-  var ORDER = ['model_a','model_b','model_c','round','judge'];
 
-  function setLane(phase, state) {
-    var id = LANE_IDS[phase]; if (!id) return;
-    var el = document.getElementById(id); if (!el) return;
+  var ALL_BUBBLES = [
+    'bubble-model_a', 'bubble-model_b', 'bubble-model_c',
+    'bubble-model_a_r1', 'bubble-model_b_r1', 'bubble-model_c_r1',
+    'bubble-judge'
+  ];
+
+  var ROUND_LABELS = {
+    'model_a': 'round-label-0',
+    'round1_model_a': 'round-label-1'
+  };
+
+  var currentBubble = null;
+
+  function setBubbleState(bubbleId, state) {
+    var el = document.getElementById(bubbleId);
+    if (!el) return;
     el.setAttribute('data-state', state);
-    var status = el.querySelector('.lane-status .label');
+    var status = el.querySelector('.bubble-status .label');
     if (status) {
-      status.textContent = state === 'active' ? 'On the floor' :
-                           state === 'done'   ? 'Yielded'      :
-                                                'Awaiting';
+      status.textContent = state === 'active' ? 'Speaking…' :
+                           state === 'done'   ? 'Done'       :
+                                                 'Awaiting';
     }
   }
-
-  var currentPhase = null;
 
   function setStatus(label, mode) {
     var foot = document.getElementById('floor-foot');
@@ -49,26 +63,45 @@
   }
 
   function clearAll() {
-    ORDER.forEach(function(p) {
-      setLane(p, 'idle');
-      var id = LANE_IDS[p];
+    ALL_BUBBLES.forEach(function(id) { setBubbleState(id, 'idle'); });
+    // Clear stream text
+    ALL_BUBBLES.forEach(function(id) {
       var el = document.getElementById(id);
       if (el) {
-        var s = el.querySelector('.lane-stream');
+        var s = el.querySelector('.bubble-stream');
         if (s) s.textContent = '';
       }
     });
-    currentPhase = null;
+    // Hide round labels and judge divider
+    document.querySelectorAll('.conv-round-label, .conv-divider').forEach(function(el) {
+      el.style.display = 'none';
+    });
+    currentBubble = null;
+  }
+
+  function showRoundLabel(phase) {
+    var labelId = ROUND_LABELS[phase];
+    if (labelId) {
+      var el = document.getElementById(labelId);
+      if (el) el.style.display = '';
+    }
+    // Show judge divider
+    if (phase === 'judge') {
+      var div = document.getElementById('judge-divider');
+      if (div) div.style.display = '';
+    }
   }
 
   function appendToken(token) {
-    if (!currentPhase) currentPhase = 'model_a';
-    var id = LANE_IDS[currentPhase]; if (!id) return;
-    var el = document.getElementById(id); if (!el) return;
-    var s = el.querySelector('.lane-stream');
+    if (!currentBubble) currentBubble = 'bubble-model_a';
+    var el = document.getElementById(currentBubble);
+    if (!el) return;
+    var s = el.querySelector('.bubble-stream');
     if (!s) return;
     s.textContent += token;
     s.scrollTop = s.scrollHeight;
+    // Auto-scroll the bubble into view
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
   function startPhase(phase) {
@@ -80,11 +113,18 @@
       clearAll();
       _runComplete = false;
     }
-    if (currentPhase && currentPhase !== phase) {
-      setLane(currentPhase, 'done');
+
+    var bubbleId = BUBBLE_MAP[phase];
+    if (!bubbleId) return;
+
+    // Mark previous as done
+    if (currentBubble && currentBubble !== bubbleId) {
+      setBubbleState(currentBubble, 'done');
     }
-    currentPhase = phase;
-    setLane(phase, 'active');
+
+    showRoundLabel(phase);
+    currentBubble = bubbleId;
+    setBubbleState(bubbleId, 'active');
   }
 
   function connect() {
@@ -108,13 +148,12 @@
       } catch(_) {}
     });
     source.addEventListener('done', function() {
-      if (currentPhase) setLane(currentPhase, 'done');
-      currentPhase = null;
+      if (currentBubble) setBubbleState(currentBubble, 'done');
+      currentBubble = null;
       _runComplete = true;
       setStatus('Court adjourned', 'idle');
       source.close(); source = null;
       setTimeout(function() {
-        // Re-arm for the next turn — keep deliberation content visible
         setStatus('Awaiting query', 'idle');
         connect();
       }, 1800);
@@ -127,7 +166,7 @@
   }
 
   var obs = new MutationObserver(function() {
-    if (document.getElementById('lane-a') && document.getElementById('floor-foot')) {
+    if (document.getElementById('bubble-model_a') && document.getElementById('floor-foot')) {
       obs.disconnect();
       setStatus('Awaiting query', 'idle');
       connect();
@@ -141,9 +180,24 @@
     var btn = document.getElementById('clear-btn');
     if (btn) {
       btn.addEventListener('click', function() {
-        clearAll();
-        _runComplete = false;
-        setStatus('Awaiting query', 'idle');
+        // Use the global clearAll from the first IIFE
+        // We need to find bubbles and reset them
+        document.querySelectorAll('.conv-bubble').forEach(function(el) {
+          el.setAttribute('data-state', 'idle');
+          var s = el.querySelector('.bubble-stream');
+          if (s) s.textContent = '';
+          var label = el.querySelector('.bubble-status .label');
+          if (label) label.textContent = 'Awaiting';
+        });
+        document.querySelectorAll('.conv-round-label, .conv-divider').forEach(function(el) {
+          el.style.display = 'none';
+        });
+        var foot = document.getElementById('floor-foot');
+        if (foot) {
+          foot.setAttribute('data-conn', 'idle');
+          var lbl = foot.querySelector('.label');
+          if (lbl) lbl.textContent = 'Awaiting query';
+        }
       });
       return;
     }

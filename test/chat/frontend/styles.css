@@ -5,16 +5,15 @@
     --ink-soft:     #4A463E;
     --rule:         #1A1814;
     --rule-soft:    rgba(26,24,20,0.18);
-    --gold:         oklch(0.62 0.13 65);    /* Model A — rust/amber */
-    --teal:         oklch(0.48 0.09 200);   /* Model B — deep teal */
-    --olive:        oklch(0.55 0.10 110);   /* Model C — mustard-olive */
-    --gavel:        oklch(0.45 0.16 25);    /* Judge — court red */
+    --gold:         oklch(0.62 0.13 65);
+    --teal:         oklch(0.48 0.09 200);
+    --olive:        oklch(0.55 0.10 110);
+    --gavel:        oklch(0.45 0.16 25);
     --serif:        "Instrument Serif", "Times New Roman", serif;
     --sans:         "Geist", "Helvetica Neue", system-ui, sans-serif;
     --mono:         "JetBrains Mono", ui-monospace, monospace;
   }
 
-  /* ---- Global page chrome ---- */
   html, body, gradio-app, .gradio-container {
     background: var(--paper) !important;
     color: var(--ink) !important;
@@ -23,7 +22,6 @@
   .gradio-container { max-width: 1400px !important; padding: 0 28px 32px !important; }
   footer, .footer, .show-api, .built-with { display: none !important; }
 
-  /* Subtle paper grain */
   body::before {
     content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
     background-image:
@@ -32,7 +30,6 @@
     mix-blend-mode: multiply;
   }
 
-  /* ---- Masthead ---- */
   .masthead {
     border-top: 4px solid var(--ink);
     border-bottom: 1px solid var(--ink);
@@ -80,10 +77,8 @@
     margin-bottom: 28px;
   }
 
-  /* ---- Two-col grid via Gradio Row ---- */
   #main-row { gap: 32px !important; align-items: stretch; }
 
-  /* Section headers — small caps editorial */
   .sect-h {
     font-family: var(--mono);
     font-size: 10px;
@@ -99,17 +94,14 @@
   }
   .sect-h .num { font-style: italic; font-family: var(--serif); font-size: 14px; letter-spacing: 0; color: var(--ink); }
 
-  /* ---- Chat column ---- */
   #chat-col { background: transparent; }
 
-  /* Gradio 6 Chatbot reset — targets actual DOM: #chatbot.block */
   #chatbot, #chatbot > div, #chatbot .wrapper, .bubble-wrap {
     background: transparent !important;
     border: none !important;
     box-shadow: none !important;
     color: var(--ink) !important;
   }
-  /* Gradio 6 message bubbles */
   #chatbot .message-wrap, #chatbot .prose, #chatbot [class*="message"] {
     background: transparent !important;
     color: var(--ink) !important;
@@ -150,10 +142,8 @@
   .message strong, .message b { font-weight: 600; }
   .message em, .message i { font-family: var(--serif); font-size: 1.05em; }
 
-  /* Hide Gradio avatar block (but not the .role flex-wrap that holds message content in v6+) */
   .avatar-container { display: none !important; }
 
-  /* ---- Input row ---- */
   #input-row {
     border-top: 2px solid var(--ink);
     border-bottom: 1px solid var(--ink);
@@ -195,92 +185,191 @@
   }
   #clear-btn:hover { color: var(--paper) !important; background: var(--ink) !important; border-color: var(--ink) !important; }
 
-  /* ---- The Floor (right column custom HTML) ---- */
-  .floor { display: flex; flex-direction: column; gap: 14px; }
-  .lane {
-    border: 1px solid var(--rule);
-    background: var(--paper);
-    padding: 14px 16px 16px;
-    position: relative;
-    transition: background 240ms ease, border-color 240ms ease;
-  }
-  .lane[data-state="active"] {
-    background: linear-gradient(180deg, var(--paper) 0%, var(--paper-2) 100%);
-    border-color: var(--ink);
-    box-shadow: 3px 3px 0 var(--ink);
-  }
-  .lane[data-state="done"] { opacity: 0.78; }
-  .lane[data-state="idle"] .lane-stream { opacity: 0.35; }
+  /* ---- Conversation Bubble Floor (right column) ---- */
+  .floor { display: flex; flex-direction: column; gap: 8px; }
 
-  .lane-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
-  .lane-num {
-    font-family: var(--serif); font-style: italic;
-    font-size: 32px; line-height: 1;
-    color: var(--lane-color, var(--ink));
-    min-width: 36px;
+  /* Round labels */
+  .conv-round-label {
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    padding: 10px 0 4px;
+    position: relative;
   }
-  .lane-name {
-    font-family: var(--sans); font-size: 14px; font-weight: 500;
-    color: var(--ink); letter-spacing: -0.01em;
-    flex: 1;
+  .conv-round-label span {
+    background: var(--paper);
+    padding: 0 12px;
+    position: relative;
+    z-index: 1;
   }
-  .lane-name small {
-    display: block;
-    font-family: var(--mono); font-size: 9px;
-    letter-spacing: 0.22em; text-transform: uppercase;
-    color: var(--ink-soft); font-weight: 400; margin-top: 2px;
-  }
-  .lane-status {
-    font-family: var(--mono); font-size: 9px; letter-spacing: 0.2em;
-    text-transform: uppercase; color: var(--ink-soft);
-    display: flex; align-items: center; gap: 6px;
-  }
-  .lane-status .dot {
-    width: 7px; height: 7px; border-radius: 50%;
+  .conv-round-label::before {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; top: 50%;
+    height: 1px;
     background: var(--rule-soft);
   }
-  .lane[data-state="active"] .lane-status .dot {
-    background: var(--lane-color, var(--ink));
-    box-shadow: 0 0 0 0 var(--lane-color, var(--ink));
+
+  /* Judge divider */
+  .conv-divider {
+    text-align: center;
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 14px;
+    color: var(--gavel);
+    padding: 12px 0 4px;
+    position: relative;
+  }
+  .conv-divider span {
+    background: var(--paper);
+    padding: 0 12px;
+    position: relative;
+    z-index: 1;
+  }
+  .conv-divider::before {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; top: 50%;
+    height: 2px solid var(--gavel);
+    background: var(--gavel);
+    opacity: 0.4;
+  }
+
+  /* Conversation bubbles */
+  .conv-bubble {
+    border-left: 3px solid var(--bubble-color, var(--ink));
+    background: var(--paper);
+    padding: 12px 14px;
+    position: relative;
+    transition: background 240ms ease, box-shadow 240ms ease, opacity 240ms ease;
+    opacity: 0.5;
+    border-radius: 0 4px 4px 0;
+  }
+  .conv-bubble[data-state="active"] {
+    opacity: 1;
+    background: linear-gradient(135deg, var(--paper) 0%, var(--paper-2) 100%);
+    box-shadow: 2px 2px 0 var(--bubble-color, var(--ink));
+  }
+  .conv-bubble[data-state="done"] {
+    opacity: 0.75;
+    border-left-color: var(--bubble-color, var(--ink));
+  }
+  .conv-bubble[data-state="idle"] .bubble-stream { opacity: 0.3; }
+
+  .bubble-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+  .bubble-avatar {
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bubble-color, var(--ink));
+    color: var(--paper);
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .bubble-avatar.gavel {
+    width: 32px; height: 32px;
+    background: var(--gavel);
+    font-size: 16px;
+    border-radius: 50%;
+  }
+  .bubble-name {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink);
+    flex: 1;
+  }
+  .bubble-name small {
+    display: block;
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    font-weight: 400;
+    margin-top: 1px;
+  }
+  .bubble-status {
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .bubble-status .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--rule-soft);
+  }
+  .conv-bubble[data-state="active"] .bubble-status .dot {
+    background: var(--bubble-color, var(--ink));
+    box-shadow: 0 0 0 0 var(--bubble-color, var(--ink));
     animation: pulse 1.4s infinite;
   }
-  .lane[data-state="done"] .lane-status .dot { background: var(--lane-color, var(--ink)); }
-  .lane[data-state="active"] .lane-status { color: var(--lane-color, var(--ink)); }
+  .conv-bubble[data-state="done"] .bubble-status .dot {
+    background: var(--bubble-color, var(--ink));
+  }
+  .conv-bubble[data-state="active"] .bubble-status {
+    color: var(--bubble-color, var(--ink));
+  }
+
   @keyframes pulse {
-    0%   { box-shadow: 0 0 0 0 var(--lane-color, var(--ink)); }
-    70%  { box-shadow: 0 0 0 8px transparent; }
+    0%   { box-shadow: 0 0 0 0 var(--bubble-color, var(--ink)); }
+    70%  { box-shadow: 0 0 0 7px transparent; }
     100% { box-shadow: 0 0 0 0 transparent; }
   }
 
-  .lane-stream {
-    font-family: var(--mono); font-size: 12px; line-height: 1.65;
-    color: var(--ink); white-space: pre-wrap; word-break: break-word;
-    max-height: 140px; overflow-y: auto;
-    padding-top: 8px; border-top: 1px dashed var(--rule-soft);
+  .bubble-stream {
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--ink);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 120px;
+    overflow-y: auto;
+    padding-top: 6px;
+    border-top: 1px dashed var(--rule-soft);
     transition: opacity 240ms ease;
   }
-  .lane-stream:empty::before {
+  .bubble-stream:empty::before {
     content: attr(data-placeholder);
     color: var(--ink-soft); opacity: 0.5; font-style: italic;
   }
-  .lane-stream::-webkit-scrollbar { width: 4px; }
-  .lane-stream::-webkit-scrollbar-thumb { background: var(--rule-soft); }
+  .bubble-stream::-webkit-scrollbar { width: 3px; }
+  .bubble-stream::-webkit-scrollbar-thumb { background: var(--rule-soft); }
 
-  /* The judge lane is special */
-  .lane.judge { background: var(--ink); color: var(--paper); border-color: var(--ink); margin-top: 6px; }
-  .lane.judge .lane-num { color: var(--gavel); font-size: 38px; }
-  .lane.judge .lane-name { color: var(--paper); font-weight: 600; letter-spacing: 0.04em; }
-  .lane.judge .lane-name small { color: rgba(244,239,226,0.55); }
-  .lane.judge .lane-status { color: rgba(244,239,226,0.65); }
-  .lane.judge .lane-stream { color: rgba(244,239,226,0.92); border-top-color: rgba(244,239,226,0.18); }
-  .lane.judge[data-state="active"] { box-shadow: 4px 4px 0 var(--gavel); }
-  .lane.judge .gavel-mark {
-    position: absolute; top: 12px; right: 14px;
-    font-family: var(--serif); font-style: italic; font-size: 18px;
-    color: var(--gavel); opacity: 0.85;
+  /* Judge bubble — inverted style */
+  .conv-bubble.judge {
+    background: var(--ink);
+    color: var(--paper);
+    border-left-color: var(--gavel);
+    border-left-width: 4px;
+  }
+  .conv-bubble.judge .bubble-name { color: var(--paper); }
+  .conv-bubble.judge .bubble-name small { color: rgba(244,239,226,0.55); }
+  .conv-bubble.judge .bubble-status { color: rgba(244,239,226,0.6); }
+  .conv-bubble.judge .bubble-stream {
+    color: rgba(244,239,226,0.92);
+    border-top-color: rgba(244,239,226,0.18);
+  }
+  .conv-bubble.judge[data-state="active"] {
+    box-shadow: 3px 3px 0 var(--gavel);
   }
 
-  /* Floor footer — connection state */
+  /* Floor footer */
   .floor-foot {
     margin-top: 4px; padding-top: 10px;
     border-top: 1px solid var(--rule-soft);
@@ -295,5 +384,4 @@
   .floor-foot[data-conn="live"]    .conn-dot { background: oklch(0.65 0.16 145); }
   .floor-foot[data-conn="waiting"] .conn-dot { background: var(--gold); }
 
-  /* Hide Gradio default markdown headers from the chatbot Markdown widget */
   .prose h1, .prose h2, .prose h3 { font-family: var(--serif) !important; font-weight: 400 !important; }

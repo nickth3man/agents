@@ -1,50 +1,79 @@
 <div class="floor">
-  <div class="sect-h"><span>The Floor — Live Deliberation</span><span class="num">II</span></div>
+  <div class="sect-h"><span>The Floor — Live Conversation</span><span class="num">II</span></div>
 
-  <div class="lane" id="lane-a" data-state="idle" style="--lane-color: var(--gold);">
-    <div class="lane-head">
-      <div class="lane-num">I.</div>
-      <div class="lane-name">Model A<small>Direct · Practical</small></div>
-      <div class="lane-status"><span class="dot"></span><span class="label">Awaiting</span></div>
-    </div>
-    <div class="lane-stream" data-placeholder="—— quiet ——"></div>
+  <div class="conv-round-label" id="round-label-0" style="display:none;">
+    <span>Round 1 — Opening Statements</span>
   </div>
 
-  <div class="lane" id="lane-b" data-state="idle" style="--lane-color: var(--teal);">
-    <div class="lane-head">
-      <div class="lane-num">II.</div>
-      <div class="lane-name">Model B<small>Cautious · Analytical</small></div>
-      <div class="lane-status"><span class="dot"></span><span class="label">Awaiting</span></div>
+  <div class="conv-bubble" id="bubble-model_a" data-speaker="A" data-state="idle" style="--bubble-color: var(--gold);">
+    <div class="bubble-head">
+      <span class="bubble-avatar">A</span>
+      <span class="bubble-name">Model A<small>Direct · Practical</small></span>
+      <span class="bubble-status"><span class="dot"></span><span class="label">Awaiting</span></span>
     </div>
-    <div class="lane-stream" data-placeholder="—— quiet ——"></div>
+    <div class="bubble-stream" data-placeholder="—— quiet ——"></div>
   </div>
 
-  <div class="lane" id="lane-c" data-state="idle" style="--lane-color: var(--olive);">
-    <div class="lane-head">
-      <div class="lane-num">III.</div>
-      <div class="lane-name">Model C<small>Creative · Alternative</small></div>
-      <div class="lane-status"><span class="dot"></span><span class="label">Awaiting</span></div>
+  <div class="conv-bubble" id="bubble-model_b" data-speaker="B" data-state="idle" style="--bubble-color: var(--teal);">
+    <div class="bubble-head">
+      <span class="bubble-avatar">B</span>
+      <span class="bubble-name">Model B<small>Cautious · Analytical</small></span>
+      <span class="bubble-status"><span class="dot"></span><span class="label">Awaiting</span></span>
     </div>
-    <div class="lane-stream" data-placeholder="—— quiet ——"></div>
+    <div class="bubble-stream" data-placeholder="—— quiet ——"></div>
   </div>
 
-  <div class="lane" id="lane-round" data-state="idle" style="--lane-color: var(--ink);">
-    <div class="lane-head">
-      <div class="lane-num">§</div>
-      <div class="lane-name">Cross-Examination<small>Critique round</small></div>
-      <div class="lane-status"><span class="dot"></span><span class="label">Awaiting</span></div>
+  <div class="conv-bubble" id="bubble-model_c" data-speaker="C" data-state="idle" style="--bubble-color: var(--olive);">
+    <div class="bubble-head">
+      <span class="bubble-avatar">C</span>
+      <span class="bubble-name">Model C<small>Creative · Alternative</small></span>
+      <span class="bubble-status"><span class="dot"></span><span class="label">Awaiting</span></span>
     </div>
-    <div class="lane-stream" data-placeholder="—— quiet ——"></div>
+    <div class="bubble-stream" data-placeholder="—— quiet ——"></div>
   </div>
 
-  <div class="lane judge" id="lane-judge" data-state="idle" style="--lane-color: var(--gavel);">
-    <div class="gavel-mark">⚖</div>
-    <div class="lane-head">
-      <div class="lane-num">¶</div>
-      <div class="lane-name">The Judge<small>Synthesis · Ruling</small></div>
-      <div class="lane-status"><span class="dot"></span><span class="label">Awaiting</span></div>
+  <div class="conv-round-label" id="round-label-1" style="display:none;">
+    <span>Round 2 — Rebuttals</span>
+  </div>
+
+  <div class="conv-bubble" id="bubble-model_a_r1" data-speaker="A" data-state="idle" style="--bubble-color: var(--gold);">
+    <div class="bubble-head">
+      <span class="bubble-avatar">A</span>
+      <span class="bubble-name">Model A<small>Direct · Practical</small></span>
+      <span class="bubble-status"><span class="dot"></span><span class="label">Awaiting</span></span>
     </div>
-    <div class="lane-stream" data-placeholder="—— chambers in session ——"></div>
+    <div class="bubble-stream" data-placeholder="—— quiet ——"></div>
+  </div>
+
+  <div class="conv-bubble" id="bubble-model_b_r1" data-speaker="B" data-state="idle" style="--bubble-color: var(--teal);">
+    <div class="bubble-head">
+      <span class="bubble-avatar">B</span>
+      <span class="bubble-name">Model B<small>Cautious · Analytical</small></span>
+      <span class="bubble-status"><span class="dot"></span><span class="label">Awaiting</span></span>
+    </div>
+    <div class="bubble-stream" data-placeholder="—— quiet ——"></div>
+  </div>
+
+  <div class="conv-bubble" id="bubble-model_c_r1" data-speaker="C" data-state="idle" style="--bubble-color: var(--olive);">
+    <div class="bubble-head">
+      <span class="bubble-avatar">C</span>
+      <span class="bubble-name">Model C<small>Creative · Alternative</small></span>
+      <span class="bubble-status"><span class="dot"></span><span class="label">Awaiting</span></span>
+    </div>
+    <div class="bubble-stream" data-placeholder="—— quiet ——"></div>
+  </div>
+
+  <div class="conv-divider" id="judge-divider" style="display:none;">
+    <span>⚖ Final Ruling</span>
+  </div>
+
+  <div class="conv-bubble judge" id="bubble-judge" data-speaker="J" data-state="idle" style="--bubble-color: var(--gavel);">
+    <div class="bubble-head">
+      <span class="bubble-avatar gavel">⚖</span>
+      <span class="bubble-name">The Judge<small>Synthesis · Ruling</small></span>
+      <span class="bubble-status"><span class="dot"></span><span class="label">Awaiting</span></span>
+    </div>
+    <div class="bubble-stream" data-placeholder="—— chambers in session ——"></div>
   </div>
 
   <div class="floor-foot" id="floor-foot" data-conn="idle">

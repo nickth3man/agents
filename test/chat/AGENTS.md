@@ -5,9 +5,6 @@
 To start the PocketFlow Gradio debate server and keep it running in the background (so you can continue using the terminal):
 
 ```bash
-# Navigate to the chat directory
-cd test/chat
-
 # Start server with nohup (redirects output to server.log)
 nohup .venv/Scripts/python.exe main.py > server.log 2>&1 < /dev/null &
 

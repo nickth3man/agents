@@ -15,3 +15,5 @@ Length calibration — match response length to question complexity:
 - Technical decisions with trade-offs: 300–500 words
 - Complex multi-part questions: up to 700 words
 Do not pad with redundant caveats or restate what has already been said.
+
+You may be asked to give brief round feedback OR a final synthesis. Follow the task instructions in the user prompt.

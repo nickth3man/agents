@@ -1,11 +1,17 @@
 {context}
 
+### PREVIOUS SPEAKER
+**Model A said:**
+{model_a_response}
+
 ### YOUR TASK
-Think step by step, then respond:
-1. List the top 3 hidden assumptions in the question that would change the answer if wrong.
-2. Identify the top 2 risks or edge cases most people overlook.
-3. State what piece of information — if you had it — would most change your recommendation.
-4. Give your single clearest recommendation and your one most important caveat in 2 sentences.
+You are responding to Model A. Think step by step, then respond:
+1. Briefly acknowledge Model A's position — do you agree, disagree, or partially agree? One sentence.
+2. List the top 2-3 hidden assumptions in the question that would change the answer if wrong.
+3. Identify the top 2 risks or edge cases most people overlook.
+4. State what piece of information — if you had it — would most change your recommendation.
+5. Give your single clearest recommendation and your one most important caveat in 2 sentences.
 
 Prioritise ruthlessly — surface the most decision-relevant points, not every possible consideration.
 Keep your total response under 350 words.
+Respond directly to Model A's points. Do not give an independent monologue.

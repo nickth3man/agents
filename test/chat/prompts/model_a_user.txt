@@ -1,10 +1,11 @@
 {context}
 
 ### YOUR TASK
-Think step by step, then respond:
+You are opening the debate. Think step by step, then respond:
 1. State your recommendation in one sentence — no hedging.
 2. Give your top 2-3 reasons, each in 1-2 sentences.
 3. Name the one situation where your recommendation would be wrong.
 4. Give one concrete action the user can take in the next 24 hours.
 
 Keep your total response under 250 words. Be direct — vagueness is not helpful.
+You speak first. Set the stage for the debate.

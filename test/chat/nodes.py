@@ -1,6 +1,5 @@
-"""Async nodes for parallel multi-model debate."""
+"""Async nodes for sequential multi-round conversational debate."""
 
-import asyncio
 import os
 from datetime import datetime
 
@@ -17,6 +16,20 @@ _PROMPTS = os.path.join(os.path.dirname(__file__), "prompts")
 def _prompt(name: str) -> str:
     with open(os.path.join(_PROMPTS, name), encoding="utf-8") as f:
         return f.read()
+
+
+DEBATE_ROUNDS = 2
+SPEAKER_ORDER = ["model_a", "model_b", "model_c"]
+SPEAKER_LABELS = {
+    "model_a": "Model A (Direct & Practical)",
+    "model_b": "Model B (Cautious & Analytical)",
+    "model_c": "Model C (Creative & Alternative)",
+}
+SPEAKER_SHORT = {
+    "model_a": "A",
+    "model_b": "B",
+    "model_c": "C",
+}
 
 
 class PrepareDebate(AsyncNode):
@@ -40,116 +53,150 @@ Current Date: {datetime.now().date()}
     async def post_async(self, shared, prep_res, exec_res):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
-        
+
         session["debate_context"] = exec_res
-        session["model_responses"] = {}
-        session["debate_transcript"] = []
+        session["conversation_log"] = []
         session["judge_answer"] = None
-        
+
         save_conversation(conversation_id, session)
-        
+
         flow_log = shared["flow_queue"]
-        flow_log.put("🎯 Preparing debate context...")
-        
+        flow_log.put("preparing")
+
         return "default"
 
 
-# ── Model prompts (used by ParallelModels) ─────────────────────────────────
+MODEL_SYSTEM_PROMPTS = {
+    "model_a": _prompt("model_a_system.txt"),
+    "model_b": _prompt("model_b_system.txt"),
+    "model_c": _prompt("model_c_system.txt"),
+}
+MODEL_OPENING_PROMPTS = {
+    "model_a": _prompt("model_a_user.txt"),
+    "model_b": _prompt("model_b_user.txt"),
+    "model_c": _prompt("model_c_user.txt"),
+}
+MODEL_REPLY_SYSTEM = {
+    "model_a": _prompt("model_a_reply_system.txt"),
+    "model_b": _prompt("model_b_reply_system.txt"),
+    "model_c": _prompt("model_c_reply_system.txt"),
+}
 
-MODEL_A_PROMPT = _prompt("model_a_user.txt")
-MODEL_B_PROMPT = _prompt("model_b_user.txt")
-MODEL_C_PROMPT = _prompt("model_c_user.txt")
 
-MODEL_A_SYSTEM = _prompt("model_a_system.txt")
-MODEL_B_SYSTEM = _prompt("model_b_system.txt")
-MODEL_C_SYSTEM = _prompt("model_c_system.txt")
+def _build_opening_prompt(speaker, context, conversation_log):
+    if speaker == "model_a":
+        return MODEL_OPENING_PROMPTS["model_a"].format(context=context)
+    elif speaker == "model_b":
+        a_resp = next(
+            (e["content"] for e in conversation_log if e["speaker"] == "model_a"),
+            "No response yet.",
+        )
+        return MODEL_OPENING_PROMPTS["model_b"].format(
+            context=context, model_a_response=a_resp
+        )
+    elif speaker == "model_c":
+        a_resp = next(
+            (e["content"] for e in conversation_log if e["speaker"] == "model_a"),
+            "No response yet.",
+        )
+        b_resp = next(
+            (e["content"] for e in conversation_log if e["speaker"] == "model_b"),
+            "No response yet.",
+        )
+        return MODEL_OPENING_PROMPTS["model_c"].format(
+            context=context,
+            model_a_response=a_resp,
+            model_b_response=b_resp,
+        )
 
 
-class ParallelModels(AsyncNode):
-    """Runs Model A, B, C in parallel using asyncio.gather()."""
-    
+
+class ConversationRound(AsyncNode):
+    """Runs one round of the sequential debate: A → B → C."""
+
     async def prep_async(self, shared):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
         stream_queue = shared.get("stream_queue")
-        return (session["debate_context"], stream_queue)
+        return session, shared, stream_queue
 
     async def exec_async(self, prep_res):
-        context, stream_queue = prep_res
-        import time
+        session, shared, stream_queue = prep_res
+        context = session["debate_context"]
+        conversation_log = session.get("conversation_log", [])
+        current_round = shared.get("current_round", 0)
+
         tracer = get_tracer()
-        
-        with tracer.start_as_current_span("parallel_models"):
-            log.info("parallel_models_start")
-            t0 = time.perf_counter()
-            
-            # Run all three models concurrently
-            results = await asyncio.gather(
-                self._run_model("model_a", context, MODEL_A_PROMPT, MODEL_A_SYSTEM, stream_queue),
-                self._run_model("model_b", context, MODEL_B_PROMPT, MODEL_B_SYSTEM, stream_queue),
-                self._run_model("model_c", context, MODEL_C_PROMPT, MODEL_C_SYSTEM, stream_queue),
-                return_exceptions=True,
-            )
-            
-            elapsed = time.perf_counter() - t0
-            log.info("parallel_models_done", total_elapsed_ms=round(elapsed * 1000, 2))
-            
-            # Check for failures
-            responses = {}
-            for name, result in zip(["model_a", "model_b", "model_c"], results):
-                if isinstance(result, Exception):
-                    log.error("parallel_models_failed", model=name, error=str(result))
-                    responses[name] = f"Error: {result}"
+        import time
+
+        with tracer.start_as_current_span(f"conversation_round_{current_round}"):
+            for speaker in SPEAKER_ORDER:
+                t0 = time.perf_counter()
+                phase_name = f"round{current_round}_{speaker}" if current_round > 0 else speaker
+                log.info("speaker_start", phase=phase_name, speaker=speaker)
+
+                if stream_queue is not None:
+                    from main import PHASE_SENTINEL_PREFIX, PHASE_SENTINEL_SUFFIX
+                    stream_queue.put(f"{PHASE_SENTINEL_PREFIX}{phase_name}{PHASE_SENTINEL_SUFFIX}")
+
+                if current_round == 0:
+                    prompt = _build_opening_prompt(speaker, context, conversation_log)
+                    system_prompt = MODEL_SYSTEM_PROMPTS[speaker]
                 else:
-                    responses[name] = result
-            
-            return responses
+                    prompt = self._build_reply(speaker, context, conversation_log, current_round)
+                    system_prompt = MODEL_REPLY_SYSTEM[speaker]
 
-    async def _run_model(self, phase_name, context, prompt_template, system_prompt, stream_queue):
-        """Run a single model and return its response."""
-        import time
-        tracer = get_tracer()
-        t0 = time.perf_counter()
-        log.info(f"model_start", phase=phase_name)
-        with tracer.start_as_current_span(f"model_{phase_name}"):
-            # Send phase marker to UI
-            if stream_queue is not None:
-                from main import PHASE_SENTINEL_PREFIX, PHASE_SENTINEL_SUFFIX
-                stream_queue.put(f"{PHASE_SENTINEL_PREFIX}{phase_name}{PHASE_SENTINEL_SUFFIX}")
-            
-            prompt = prompt_template.format(context=context)
-            response = await call_llm_stream(
-                prompt, system_prompt=system_prompt, token_queue=stream_queue
-            )
-            elapsed = time.perf_counter() - t0
-            log.info(f"model_end", phase=phase_name, elapsed_ms=round(elapsed * 1000, 2))
-            
-            return response
+                response = await call_llm_stream(
+                    prompt, system_prompt=system_prompt, token_queue=stream_queue
+                )
+                elapsed = time.perf_counter() - t0
+                log.info("speaker_done", phase=phase_name, elapsed_ms=round(elapsed * 1000, 2))
+
+                conversation_log.append({
+                    "speaker": speaker,
+                    "content": response,
+                    "round": current_round,
+                })
+
+                flow_log = shared["flow_queue"]
+                flow_log.put(f"speaker_done:{speaker}:round{current_round}")
+
+        return conversation_log
+
+    def _build_reply(self, speaker, context, conversation_log, current_round):
+        transcript_lines = []
+        for entry in conversation_log:
+            label = SPEAKER_LABELS.get(entry["speaker"], entry["speaker"])
+            short = SPEAKER_SHORT[entry["speaker"]]
+            transcript_lines.append(f"**{short}:** {entry['content']}")
+        transcript = "\n\n---\n\n".join(transcript_lines)
+
+        return f"""{context}
+
+### CONVERSATION SO FAR (Round {current_round} of {DEBATE_ROUNDS})
+{transcript}
+
+### YOUR TURN
+You are {SPEAKER_SHORT[speaker]} — {SPEAKER_LABELS[speaker].split('(')[1].rstrip(')')}.
+Continue the conversation. Respond directly to what was just said.
+Agree, push back, refine your position, or concede a point.
+Keep it conversational and punchy. Under 200 words."""
 
     async def post_async(self, shared, prep_res, exec_res):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
-        
-        # Store all responses, filtering out errors
-        for model_name, response in exec_res.items():
-            session["model_responses"][model_name] = response
-            session["debate_transcript"].append({
-                "speaker": model_name,
-                "content": response
-            })
-        
+        session["conversation_log"] = exec_res
         save_conversation(conversation_id, session)
-        
-        flow_log = shared["flow_queue"]
-        flow_log.put("✅ Model A (Direct & Practical) has responded")
-        flow_log.put("✅ Model B (Cautious & Analytical) has responded")
-        flow_log.put("✅ Model C (Creative & Alternative) has responded")
-        
-        return "default"
+
+        current_round = shared.get("current_round", 0)
+        shared["current_round"] = current_round + 1
+        if current_round + 1 < DEBATE_ROUNDS:
+            return "next_round"
+        return "to_judge"
 
 
-class DebateRound(AsyncNode):
-    SYSTEM_PROMPT = _prompt("debate_round_system.txt")
+class JudgeFinal(AsyncNode):
+    SYSTEM_PROMPT = _prompt("judge_final_system.txt")
 
     async def prep_async(self, shared):
         conversation_id = shared["conversation_id"]
@@ -157,109 +204,28 @@ class DebateRound(AsyncNode):
         stream_queue = shared.get("stream_queue")
         return (
             session["debate_context"],
-            session["model_responses"],
+            session.get("conversation_log", []),
             stream_queue,
         )
 
     async def exec_async(self, prep_res):
-        debate_context, model_responses, stream_queue = prep_res
-        
-        # Filter out error responses so they don't pollute the debate
-        clean_responses = {}
-        for name, resp in model_responses.items():
-            if isinstance(resp, str) and resp.startswith("Error:"):
-                clean_responses[name] = "[This model failed to respond — skip in critique]"
-            else:
-                clean_responses[name] = resp
-        
+        debate_context, conversation_log, stream_queue = prep_res
+
+        transcript_lines = []
+        for entry in conversation_log:
+            label = SPEAKER_LABELS.get(entry["speaker"], entry["speaker"])
+            short = SPEAKER_SHORT[entry["speaker"]]
+            rnd = entry.get("round", 0)
+            transcript_lines.append(f"[Round {rnd + 1}] **{short}:** {entry['content']}")
+        transcript = "\n\n---\n\n".join(transcript_lines)
+
         prompt = f"""{debate_context}
 
-### INITIAL RESPONSES FROM THREE MODELS
+### FULL DEBATE TRANSCRIPT
+{transcript}
 
-**Model A (Direct & Practical):**
-{clean_responses.get('model_a', 'No response')}
-
-**Model B (Cautious & Analytical):**
-{clean_responses.get('model_b', 'No response')}
-
-**Model C (Creative & Alternative):**
-{clean_responses.get('model_c', 'No response')}
-
-### DEBATE ROUND TASK
-Produce a concise debate critique. For each model, identify:
-1. What are the strongest points in their answer?
-2. What are the weaknesses or gaps?
-3. What would improve their response?
-
-Format as a structured critique. Be specific and constructive."""
-        
-        if stream_queue is not None:
-            return await call_llm_stream(
-                prompt, system_prompt=self.SYSTEM_PROMPT, token_queue=stream_queue
-            )
-        return await call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT)
-
-    async def post_async(self, shared, prep_res, exec_res):
-        conversation_id = shared["conversation_id"]
-        session = load_conversation(conversation_id)
-        
-        session["debate_transcript"].append({
-            "speaker": "debate_round",
-            "content": exec_res
-        })
-        session["debate_critique"] = exec_res
-        
-        save_conversation(conversation_id, session)
-        
-        flow_log = shared["flow_queue"]
-        flow_log.put("🔄 Debate round completed - models critiqued each other")
-        
-        return "default"
-
-
-class Judge(AsyncNode):
-    SYSTEM_PROMPT = _prompt("judge_system.txt")
-
-    async def prep_async(self, shared):
-        conversation_id = shared["conversation_id"]
-        session = load_conversation(conversation_id)
-        stream_queue = shared.get("stream_queue")
-        return (
-            session["debate_context"],
-            session["model_responses"],
-            session.get("debate_critique", ""),
-            stream_queue,
-        )
-
-    async def exec_async(self, prep_res):
-        debate_context, model_responses, debate_critique, stream_queue = prep_res
-        
-        # Filter out error responses for judge synthesis
-        clean_responses = {}
-        for name, resp in model_responses.items():
-            if isinstance(resp, str) and resp.startswith("Error:"):
-                clean_responses[name] = "[This model failed to respond]"
-            else:
-                clean_responses[name] = resp
-        
-        prompt = f"""{debate_context}
-
-### MODEL RESPONSES
-
-**Model A (Direct & Practical):**
-{clean_responses.get('model_a', 'No response')}
-
-**Model B (Cautious & Analytical):**
-{clean_responses.get('model_b', 'No response')}
-
-**Model C (Creative & Alternative):**
-{clean_responses.get('model_c', 'No response')}
-
-### DEBATE CRITIQUE
-{debate_critique}
-
-### YOUR TASK AS JUDGE
-Synthesize the above into ONE final answer for the user. You must:
+### YOUR TASK AS FINAL JUDGE
+Synthesize the above conversation into ONE final answer for the user. You must:
 1. Resolve any conflicts or disagreements between models
 2. Combine the strongest points from each response
 3. Remove weak or unsupported claims
@@ -267,8 +233,10 @@ Synthesize the above into ONE final answer for the user. You must:
 5. Maintain an enthusiastic and helpful tone
 
 Return ONLY the final answer. Do not explain your judging process."""
-        
+
         if stream_queue is not None:
+            from main import PHASE_SENTINEL_PREFIX, PHASE_SENTINEL_SUFFIX
+            stream_queue.put(f"{PHASE_SENTINEL_PREFIX}judge{PHASE_SENTINEL_SUFFIX}")
             return await call_llm_stream(
                 prompt, system_prompt=self.SYSTEM_PROMPT, token_queue=stream_queue
             )
@@ -277,13 +245,13 @@ Return ONLY the final answer. Do not explain your judging process."""
     async def post_async(self, shared, prep_res, exec_res):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
-        
+
         session["judge_answer"] = exec_res
         save_conversation(conversation_id, session)
-        
+
         flow_log = shared["flow_queue"]
-        flow_log.put("⚖️ Judge has synthesized the final answer")
-        
+        flow_log.put("judge_done")
+
         return "default"
 
 
@@ -291,12 +259,11 @@ class SendFinalAnswer(AsyncNode):
     async def prep_async(self, shared):
         flow_log = shared["flow_queue"]
         flow_log.put(None)
-        
-        # Signal end of stream if streaming was used
+
         stream_queue = shared.get("stream_queue")
         if stream_queue is not None:
             stream_queue.put(None)
-        
+
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
         return session["judge_answer"], shared["queue"]
@@ -310,8 +277,8 @@ class SendFinalAnswer(AsyncNode):
     async def post_async(self, shared, prep_res, exec_res):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
-        
+
         session["action_result"] = exec_res
         save_conversation(conversation_id, session)
-        
+
         return "done"
