@@ -8,3 +8,8 @@ dependencies = [
     "pocketflow>=0.0.2",
     "python-dotenv>=1.0.0",
 ]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::DeprecationWarning:lark",
+]

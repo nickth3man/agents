@@ -1,94 +1,103 @@
-# PocketFlow Gradio HITL Example
+# PocketFlow Multi-Model Debate
 
-A web-based application that demonstrates Human-in-the-Loop (HITL) workflow orchestration using PocketFlow and Gradio. This example provides an interactive interface for users to engage with AI-powered tasks while maintaining human oversight and feedback.
+A web-based application that demonstrates multi-model debate orchestration using PocketFlow and Gradio. Three AI models deliberate on a user question **in parallel**, critique each other's answers in a structured debate round, and a judge synthesizes the final verdict.
 
 ## Features
 
 - **Web-based Interface**: Built with Gradio for an accessible and user-friendly experience
-- **Human-in-the-Loop Integration**: Seamless integration of human feedback into the AI workflow
-- **Modern UI**: Clean and intuitive interface for better user interaction
-- **Powered by LLMs**: Utilizes OpenAI's models for intelligent task processing
-- **Flow Visualization**: Real-time visualization of node execution sequence and workflow progress
-- **Interactive Debugging**: Monitor and understand the decision-making process through visual feedback
+- **Multi-Model Debate**: Three distinct AI personas run concurrently via `asyncio.gather`
+- **Real-Time Streaming**: Live SSE stream showing each model's reasoning as it happens
+- **Editorial UI**: Newspaper-inspired design with live deliberation floor visualization
+- **Synthesis**: A judge model uses extractive-then-synthesise mode to produce a calibrated final answer
 
-## Getting Started
-
-This project is part of the PocketFlow cookbook examples. It's assumed you have already cloned the [PocketFlow repository](https://github.com/the-pocket/PocketFlow) and are in the `cookbook/pocketflow-gradio-hitl` directory.
+## Quick Start
 
 1. **Install required dependencies**:
     ```bash
     pip install -r requirements.txt
     ```
 
-2. **Set up your OpenAI API key**:
-    The application uses OpenAI models for processing. You need to set your API key as an environment variable:
+2. **Set environment variables** — create a `.env` file or export directly:
     ```bash
-    export OPENAI_API_KEY="your-openai-api-key-here"
+    export OPENROUTER_API_KEY="your-openrouter-api-key"
+    export OPENROUTER_MODEL="mistralai/mistral-small-2603"   # or any OpenRouter model
+    export APP_NAME="PocketFlow-Debate-Chat"                  # optional, for analytics
     ```
 
 3. **Run the Application**:
     ```bash
     python main.py
     ```
-    This will start the Gradio web interface, typically accessible at `http://localhost:7860`
+    This starts the Gradio web interface at `http://localhost:7860` and the SSE stream server at `http://localhost:7861/stream`.
 
 ## How It Works
 
-The system implements a PocketFlow workflow with a web interface:
+The system implements a PocketFlow async workflow with a parallel debate pipeline:
 
 ```mermaid
 flowchart TD
-    DecideAction[Decide Action Node] --> |"check-weather"| CheckWeather[Check Weather Node]
-    CheckWeather --> DecideAction
-    DecideAction --> |"book-hotel"| BookHotel[Book Hotel Node]
-    BookHotel --> DecideAction
-    DecideAction --> |"follow-up"| FollowUp[Follow Up Node]
-    DecideAction --> |"result-notification"| ResultNotification[Result Notification Node]
+    Prepare[PrepareDebate] --> Parallel[ParallelModels]
+    subgraph Parallel[ParallelModels — asyncio.gather]
+        A[Model A\nPragmatic Senior Engineer]
+        B[Model B\nCautious Technical Lead]
+        C[Model C\nUnconventional Systems Thinker]
+    end
+    Parallel --> Debate[DebateRound]
+    Debate --> Judge[Judge]
+    Judge --> Send[SendFinalAnswer]
 ```
 
 The workflow consists of the following nodes:
 
-1. **Decide Action Node**: The central decision-making node that determines the next action based on user input and context
-2. **Check Weather Node**: Provides weather information for specified cities and dates
-3. **Book Hotel Node**: Handles hotel reservation requests with check-in and check-out dates
-4. **Follow Up Node**: Manages user interactions by asking clarifying questions or handling out-of-scope requests
-5. **Result Notification Node**: Delivers action results and offers additional assistance
+1. **PrepareDebate**: Formats the user's chat history and current question into a debate context
+2. **ParallelModels**: Runs three model personas concurrently with `asyncio.gather`:
+   - **Model A** — Pragmatic Senior Engineer: direct recommendation, top reasons, one wrong-when, 24-hour action
+   - **Model B** — Cautious Technical Lead: hidden assumptions, overlooked risks, missing info, recommendation + caveat
+   - **Model C** — Unconventional Systems Thinker: question reframe, non-obvious alternative, assumption critique, recommendation
+3. **DebateRound**: Evaluates each model on Accuracy, Completeness, Actionability, and Intellectual Honesty; closes with "Key Takeaways for Judge"
+4. **Judge**: Extracts the strongest claim from each model, resolves contradictions using the debate critique, and synthesises one calibrated answer
+5. **SendFinalAnswer**: Delivers the verdict to the user and signals end-of-flow to all queues
 
-The flow is orchestrated through a series of directed connections:
-- The Decide Action node can trigger weather checks, hotel bookings, follow-ups, or result notifications
-- Weather checks and hotel bookings can feed back to the Decide Action node for further processing
-- Follow-up and result notification nodes provide the final steps in the workflow
+### Prompt files
 
-### Flow Visualization
+All system and user prompts live in `prompts/` as plain-text files and are loaded at startup by `nodes.py`:
 
-The application provides real-time visualization of the workflow execution:
-- The sequence of node activations is displayed chronologically
-- Users can see which decision paths are being taken
-- The visualization helps in understanding the AI's decision-making process
+| File | Used by |
+|---|---|
+| `model_a_system.txt` / `model_a_user.txt` | Model A (Pragmatic Senior Engineer) |
+| `model_b_system.txt` / `model_b_user.txt` | Model B (Cautious Technical Lead) |
+| `model_c_system.txt` / `model_c_user.txt` | Model C (Unconventional Systems Thinker) |
+| `debate_round_system.txt` | DebateRound facilitator |
+| `judge_system.txt` | Judge synthesiser |
 
-![flow visualization](./assets/flow_visualization.png)
+### Real-Time Streaming
 
-## Sample Output
-
-Here's an example of book hotel:
-
-![book hotel](./assets/book_hotel.png)
-
-Here's an example of changing intention mid-conversation:
-
-![change intention](./assets/change_intention.png)
+The application provides live visualization of the debate:
+- Phase transitions (`model_a → model_b → model_c → round → judge`) are signalled via null-byte sentinels (`\x00PHASE:name\x00`) in the stream queue
+- Each model's tokens stream in real time to its own lane on "The Floor"
+- The UI shows active, done, and idle states for each deliberation stage
 
 ## Files
 
-- [`main.py`](./main.py): Entry point for the application and Gradio interface setup
-- [`flow.py`](./flow.py): Defines the PocketFlow graph and node connections
-- [`nodes.py`](./nodes.py): Contains the node definitions for the workflow
-- [`utils/`](./utils/): Contains utility functions and helper modules
-- [`requirements.txt`](./requirements.txt): Lists project dependencies
+| Path | Purpose |
+|---|---|
+| [`main.py`](./main.py) | Entry point, Gradio interface, SSE streaming server |
+| [`flow.py`](./flow.py) | PocketFlow graph and node connections |
+| [`nodes.py`](./nodes.py) | Async node definitions for the debate pipeline |
+| [`frontend/`](./frontend/) | CSS, JavaScript, and HTML partials for the UI |
+| [`prompts/`](./prompts/) | System and user prompt text files |
+| [`utils/call_llm.py`](./utils/call_llm.py) | Sync/async LLM calls with retry and observability |
+| [`utils/call_llm_async.py`](./utils/call_llm_async.py) | Async-only LLM helper (used by tests and scripts) |
+| [`utils/conversation.py`](./utils/conversation.py) | In-memory conversation cache with TTL |
+| [`utils/observability.py`](./utils/observability.py) | structlog + OpenTelemetry setup |
+| [`tests/`](./tests/) | Pytest async unit tests for nodes and flow |
+| [`compare_prompts.py`](./compare_prompts.py) | Script to benchmark old vs new prompts side-by-side |
 
 ## Requirements
 
-- Python 3.8+
-- PocketFlow >= 0.0.2
-- Gradio >= 5.29.1
-- OpenAI >= 1.78.1
+- Python 3.10+
+- PocketFlow >= 0.0.3
+- Gradio >= 6.0.0
+- OpenAI SDK >= 2.0.0 (pointed at OpenRouter)
+- structlog, opentelemetry-sdk (observability)
+- python-dotenv (env var loading)

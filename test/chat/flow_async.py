@@ -2,7 +2,7 @@
 
 from pocketflow import AsyncFlow
 
-from nodes import (
+from nodes_async import (
     PrepareDebate,
     ParallelModels,
     DebateRound,
@@ -13,7 +13,7 @@ from nodes import (
 
 def create_flow():
     """
-    Create and connect nodes into a parallel debate flow.
+    Create and connect the nodes to form a parallel multi-model debate flow.
     
     Flow: Prepare → ParallelModels (A+B+C concurrent) → DebateRound → Judge → SendFinalAnswer
     """

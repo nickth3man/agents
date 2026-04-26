@@ -1,10 +1,9 @@
 """Async LLM calling utilities with streaming support."""
 
-import asyncio
 import os
-import time
+from typing import AsyncIterator
 
-from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, AsyncOpenAI
+from openai import AsyncOpenAI, APIConnectionError, APIStatusError, APITimeoutError
 
 from utils.observability import get_tracer, logger as log
 
@@ -37,12 +36,10 @@ def _is_retryable(exc: Exception) -> bool:
         return True
     if isinstance(exc, (TimeoutError, APITimeoutError)):
         return True
-    if isinstance(exc, APIError) and not isinstance(exc, APIStatusError):
-        return True
     return False
 
 
-async def call_llm(message: str, system_prompt: str | None = None) -> str:
+async def call_llm_async(message: str, system_prompt: str | None = None) -> str:
     """Call LLM asynchronously (non-streaming). Returns full response."""
     tracer = get_tracer()
     if not model:
@@ -62,6 +59,7 @@ async def call_llm(message: str, system_prompt: str | None = None) -> str:
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
+            import time
             with tracer.start_as_current_span("llm_call") as span:
                 span.set_attribute("llm.model", model)
                 span.set_attribute("llm.prompt_chars", prompt_len)
@@ -92,10 +90,11 @@ async def call_llm(message: str, system_prompt: str | None = None) -> str:
                 error=type(exc).__name__,
                 wait_seconds=round(wait, 1),
             )
+            import asyncio
             await asyncio.sleep(wait)
 
 
-async def call_llm_stream(
+async def call_llm_stream_async(
     message: str,
     system_prompt: str | None = None,
     token_queue=None,
@@ -123,6 +122,7 @@ async def call_llm_stream(
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
+            import time
             with tracer.start_as_current_span("llm_stream") as span:
                 span.set_attribute("llm.model", model)
                 span.set_attribute("llm.prompt_chars", prompt_len)
@@ -175,4 +175,5 @@ async def call_llm_stream(
                 error=type(exc).__name__,
                 wait_seconds=round(wait, 1),
             )
+            import asyncio
             await asyncio.sleep(wait)

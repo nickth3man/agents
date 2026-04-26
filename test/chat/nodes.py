@@ -1,20 +1,31 @@
+"""Async nodes for parallel multi-model debate."""
+
+import asyncio
+import os
 from datetime import datetime
-from queue import Queue
 
-from pocketflow import Node
+from pocketflow import AsyncNode
 
-from utils.call_llm import call_llm, call_llm_stream
+from utils.call_llm import call_llm_stream
 from utils.conversation import load_conversation, save_conversation
 from utils.format_chat_history import format_chat_history
+from utils.observability import get_tracer, logger as log
+
+_PROMPTS = os.path.join(os.path.dirname(__file__), "prompts")
 
 
-class PrepareDebate(Node):
-    def prep(self, shared):
+def _prompt(name: str) -> str:
+    with open(os.path.join(_PROMPTS, name), encoding="utf-8") as f:
+        return f.read()
+
+
+class PrepareDebate(AsyncNode):
+    async def prep_async(self, shared):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
         return session, shared["history"], shared["query"]
 
-    def exec(self, prep_res):
+    async def exec_async(self, prep_res):
         session, history, query = prep_res
         debate_context = f"""### CHAT HISTORY
 {format_chat_history(history)}
@@ -26,7 +37,7 @@ Current Date: {datetime.now().date()}
 """
         return debate_context
 
-    def post(self, shared, prep_res, exec_res):
+    async def post_async(self, shared, prep_res, exec_res):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
         
@@ -43,146 +54,104 @@ Current Date: {datetime.now().date()}
         return "default"
 
 
-class ModelAResponse(Node):
-    SYSTEM_PROMPT = """You are Model A, a direct and practical AI assistant. 
-Your style is concise, action-oriented, and focused on immediate usefulness.
-Provide clear, straightforward answers that the user can act on right away."""
+# ── Model prompts (used by ParallelModels) ─────────────────────────────────
 
-    def prep(self, shared):
+MODEL_A_PROMPT = _prompt("model_a_user.txt")
+MODEL_B_PROMPT = _prompt("model_b_user.txt")
+MODEL_C_PROMPT = _prompt("model_c_user.txt")
+
+MODEL_A_SYSTEM = _prompt("model_a_system.txt")
+MODEL_B_SYSTEM = _prompt("model_b_system.txt")
+MODEL_C_SYSTEM = _prompt("model_c_system.txt")
+
+
+class ParallelModels(AsyncNode):
+    """Runs Model A, B, C in parallel using asyncio.gather()."""
+    
+    async def prep_async(self, shared):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
         stream_queue = shared.get("stream_queue")
         return (session["debate_context"], stream_queue)
 
-    def exec(self, prep_res):
+    async def exec_async(self, prep_res):
         context, stream_queue = prep_res
-        prompt = f"""{context}
-
-### YOUR TASK
-Provide your best answer to the user's question. Be direct, practical, and actionable.
-Keep your response concise but complete."""
+        import time
+        tracer = get_tracer()
         
-        if stream_queue is not None:
-            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queues=[stream_queue] if stream_queue else None)
-        return call_llm(prompt, system_prompt=self.SYSTEM_PROMPT)
+        with tracer.start_as_current_span("parallel_models"):
+            log.info("parallel_models_start")
+            t0 = time.perf_counter()
+            
+            # Run all three models concurrently
+            results = await asyncio.gather(
+                self._run_model("model_a", context, MODEL_A_PROMPT, MODEL_A_SYSTEM, stream_queue),
+                self._run_model("model_b", context, MODEL_B_PROMPT, MODEL_B_SYSTEM, stream_queue),
+                self._run_model("model_c", context, MODEL_C_PROMPT, MODEL_C_SYSTEM, stream_queue),
+                return_exceptions=True,
+            )
+            
+            elapsed = time.perf_counter() - t0
+            log.info("parallel_models_done", total_elapsed_ms=round(elapsed * 1000, 2))
+            
+            # Check for failures
+            responses = {}
+            for name, result in zip(["model_a", "model_b", "model_c"], results):
+                if isinstance(result, Exception):
+                    log.error("parallel_models_failed", model=name, error=str(result))
+                    responses[name] = f"Error: {result}"
+                else:
+                    responses[name] = result
+            
+            return responses
 
-    def post(self, shared, prep_res, exec_res):
+    async def _run_model(self, phase_name, context, prompt_template, system_prompt, stream_queue):
+        """Run a single model and return its response."""
+        import time
+        tracer = get_tracer()
+        t0 = time.perf_counter()
+        log.info(f"model_start", phase=phase_name)
+        with tracer.start_as_current_span(f"model_{phase_name}"):
+            # Send phase marker to UI
+            if stream_queue is not None:
+                from main import PHASE_SENTINEL_PREFIX, PHASE_SENTINEL_SUFFIX
+                stream_queue.put(f"{PHASE_SENTINEL_PREFIX}{phase_name}{PHASE_SENTINEL_SUFFIX}")
+            
+            prompt = prompt_template.format(context=context)
+            response = await call_llm_stream(
+                prompt, system_prompt=system_prompt, token_queue=stream_queue
+            )
+            elapsed = time.perf_counter() - t0
+            log.info(f"model_end", phase=phase_name, elapsed_ms=round(elapsed * 1000, 2))
+            
+            return response
+
+    async def post_async(self, shared, prep_res, exec_res):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
         
-        session["model_responses"]["model_a"] = exec_res
-        session["debate_transcript"].append({
-            "speaker": "model_a",
-            "content": exec_res
-        })
+        # Store all responses, filtering out errors
+        for model_name, response in exec_res.items():
+            session["model_responses"][model_name] = response
+            session["debate_transcript"].append({
+                "speaker": model_name,
+                "content": response
+            })
         
         save_conversation(conversation_id, session)
         
         flow_log = shared["flow_queue"]
         flow_log.put("✅ Model A (Direct & Practical) has responded")
-        
-        return "default"
-
-
-class ModelBResponse(Node):
-    SYSTEM_PROMPT = """You are Model B, a cautious and analytical AI assistant.
-Your style is thorough, risk-aware, and focused on identifying edge cases, assumptions, and potential problems.
-Always consider what could go wrong and what the user might be missing."""
-
-    def prep(self, shared):
-        conversation_id = shared["conversation_id"]
-        session = load_conversation(conversation_id)
-        stream_queue = shared.get("stream_queue")
-        return (session["debate_context"], stream_queue)
-
-    def exec(self, prep_res):
-        context, stream_queue = prep_res
-        prompt = f"""{context}
-
-### YOUR TASK
-Provide your best answer to the user's question, but be sure to:
-1. Identify key assumptions you're making
-2. Point out edge cases or exceptions the user should consider
-3. Highlight any risks or caveats
-4. Suggest what information might be missing for a complete answer
-
-Keep your response concise but thorough."""
-        
-        if stream_queue is not None:
-            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queues=[stream_queue] if stream_queue else None)
-        return call_llm(prompt, system_prompt=self.SYSTEM_PROMPT)
-
-    def post(self, shared, prep_res, exec_res):
-        conversation_id = shared["conversation_id"]
-        session = load_conversation(conversation_id)
-        
-        session["model_responses"]["model_b"] = exec_res
-        session["debate_transcript"].append({
-            "speaker": "model_b",
-            "content": exec_res
-        })
-        
-        save_conversation(conversation_id, session)
-        
-        flow_log = shared["flow_queue"]
         flow_log.put("✅ Model B (Cautious & Analytical) has responded")
-        
-        return "default"
-
-
-class ModelCResponse(Node):
-    SYSTEM_PROMPT = """You are Model C, a creative and alternative-thinking AI assistant.
-Your style is innovative, looking at problems from different angles and considering non-obvious solutions.
-You challenge conventional thinking and offer fresh perspectives."""
-
-    def prep(self, shared):
-        conversation_id = shared["conversation_id"]
-        session = load_conversation(conversation_id)
-        stream_queue = shared.get("stream_queue")
-        return (session["debate_context"], stream_queue)
-
-    def exec(self, prep_res):
-        context, stream_queue = prep_res
-        prompt = f"""{context}
-
-### YOUR TASK
-Provide your best answer to the user's question from a unique or alternative perspective.
-Consider:
-1. Are there non-obvious approaches the user hasn't considered?
-2. Can you reframe the problem in a useful way?
-3. What creative solutions exist beyond the conventional answer?
-4. How might different contexts or stakeholders view this differently?
-
-Keep your response concise but insightful."""
-        
-        if stream_queue is not None:
-            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queues=[stream_queue] if stream_queue else None)
-        return call_llm(prompt, system_prompt=self.SYSTEM_PROMPT)
-
-    def post(self, shared, prep_res, exec_res):
-        conversation_id = shared["conversation_id"]
-        session = load_conversation(conversation_id)
-        
-        session["model_responses"]["model_c"] = exec_res
-        session["debate_transcript"].append({
-            "speaker": "model_c",
-            "content": exec_res
-        })
-        
-        save_conversation(conversation_id, session)
-        
-        flow_log = shared["flow_queue"]
         flow_log.put("✅ Model C (Creative & Alternative) has responded")
         
         return "default"
 
 
-class DebateRound(Node):
-    SYSTEM_PROMPT = """You are facilitating a debate between three AI models.
-Your job is to produce a concise critique round where each model reviews the others' answers.
-Be objective and focus on substantive points."""
+class DebateRound(AsyncNode):
+    SYSTEM_PROMPT = _prompt("debate_round_system.txt")
 
-    def prep(self, shared):
+    async def prep_async(self, shared):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
         stream_queue = shared.get("stream_queue")
@@ -192,21 +161,29 @@ Be objective and focus on substantive points."""
             stream_queue,
         )
 
-    def exec(self, prep_res):
+    async def exec_async(self, prep_res):
         debate_context, model_responses, stream_queue = prep_res
+        
+        # Filter out error responses so they don't pollute the debate
+        clean_responses = {}
+        for name, resp in model_responses.items():
+            if isinstance(resp, str) and resp.startswith("Error:"):
+                clean_responses[name] = "[This model failed to respond — skip in critique]"
+            else:
+                clean_responses[name] = resp
         
         prompt = f"""{debate_context}
 
 ### INITIAL RESPONSES FROM THREE MODELS
 
 **Model A (Direct & Practical):**
-{model_responses.get('model_a', 'No response')}
+{clean_responses.get('model_a', 'No response')}
 
 **Model B (Cautious & Analytical):**
-{model_responses.get('model_b', 'No response')}
+{clean_responses.get('model_b', 'No response')}
 
 **Model C (Creative & Alternative):**
-{model_responses.get('model_c', 'No response')}
+{clean_responses.get('model_c', 'No response')}
 
 ### DEBATE ROUND TASK
 Produce a concise debate critique. For each model, identify:
@@ -217,10 +194,12 @@ Produce a concise debate critique. For each model, identify:
 Format as a structured critique. Be specific and constructive."""
         
         if stream_queue is not None:
-            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queues=[stream_queue] if stream_queue else None)
-        return call_llm(prompt, system_prompt=self.SYSTEM_PROMPT)
+            return await call_llm_stream(
+                prompt, system_prompt=self.SYSTEM_PROMPT, token_queue=stream_queue
+            )
+        return await call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT)
 
-    def post(self, shared, prep_res, exec_res):
+    async def post_async(self, shared, prep_res, exec_res):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
         
@@ -238,13 +217,10 @@ Format as a structured critique. Be specific and constructive."""
         return "default"
 
 
-class Judge(Node):
-    SYSTEM_PROMPT = """You are the Judge, a senior expert reviewer.
-Your job is to synthesize multiple model responses and their debate into one final, high-quality answer.
-You must resolve conflicts, select the best ideas, and produce a coherent response.
-Never simply copy one model's answer - always synthesize."""
+class Judge(AsyncNode):
+    SYSTEM_PROMPT = _prompt("judge_system.txt")
 
-    def prep(self, shared):
+    async def prep_async(self, shared):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
         stream_queue = shared.get("stream_queue")
@@ -255,21 +231,29 @@ Never simply copy one model's answer - always synthesize."""
             stream_queue,
         )
 
-    def exec(self, prep_res):
+    async def exec_async(self, prep_res):
         debate_context, model_responses, debate_critique, stream_queue = prep_res
+        
+        # Filter out error responses for judge synthesis
+        clean_responses = {}
+        for name, resp in model_responses.items():
+            if isinstance(resp, str) and resp.startswith("Error:"):
+                clean_responses[name] = "[This model failed to respond]"
+            else:
+                clean_responses[name] = resp
         
         prompt = f"""{debate_context}
 
 ### MODEL RESPONSES
 
 **Model A (Direct & Practical):**
-{model_responses.get('model_a', 'No response')}
+{clean_responses.get('model_a', 'No response')}
 
 **Model B (Cautious & Analytical):**
-{model_responses.get('model_b', 'No response')}
+{clean_responses.get('model_b', 'No response')}
 
 **Model C (Creative & Alternative):**
-{model_responses.get('model_c', 'No response')}
+{clean_responses.get('model_c', 'No response')}
 
 ### DEBATE CRITIQUE
 {debate_critique}
@@ -285,10 +269,12 @@ Synthesize the above into ONE final answer for the user. You must:
 Return ONLY the final answer. Do not explain your judging process."""
         
         if stream_queue is not None:
-            return call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT, stream_queues=[stream_queue] if stream_queue else None)
-        return call_llm(prompt, system_prompt=self.SYSTEM_PROMPT)
+            return await call_llm_stream(
+                prompt, system_prompt=self.SYSTEM_PROMPT, token_queue=stream_queue
+            )
+        return await call_llm_stream(prompt, system_prompt=self.SYSTEM_PROMPT)
 
-    def post(self, shared, prep_res, exec_res):
+    async def post_async(self, shared, prep_res, exec_res):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
         
@@ -301,8 +287,8 @@ Return ONLY the final answer. Do not explain your judging process."""
         return "default"
 
 
-class SendFinalAnswer(Node):
-    def prep(self, shared):
+class SendFinalAnswer(AsyncNode):
+    async def prep_async(self, shared):
         flow_log = shared["flow_queue"]
         flow_log.put(None)
         
@@ -315,13 +301,13 @@ class SendFinalAnswer(Node):
         session = load_conversation(conversation_id)
         return session["judge_answer"], shared["queue"]
 
-    def exec(self, prep_res):
+    async def exec_async(self, prep_res):
         answer, queue = prep_res
         queue.put(answer)
         queue.put(None)
         return answer
 
-    def post(self, shared, prep_res, exec_res):
+    async def post_async(self, shared, prep_res, exec_res):
         conversation_id = shared["conversation_id"]
         session = load_conversation(conversation_id)
         

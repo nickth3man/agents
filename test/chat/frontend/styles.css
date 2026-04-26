@@ -1,0 +1,299 @@
+  :root {
+    --paper:        #F4EFE2;
+    --paper-2:      #EBE4D2;
+    --ink:          #1A1814;
+    --ink-soft:     #4A463E;
+    --rule:         #1A1814;
+    --rule-soft:    rgba(26,24,20,0.18);
+    --gold:         oklch(0.62 0.13 65);    /* Model A — rust/amber */
+    --teal:         oklch(0.48 0.09 200);   /* Model B — deep teal */
+    --olive:        oklch(0.55 0.10 110);   /* Model C — mustard-olive */
+    --gavel:        oklch(0.45 0.16 25);    /* Judge — court red */
+    --serif:        "Instrument Serif", "Times New Roman", serif;
+    --sans:         "Geist", "Helvetica Neue", system-ui, sans-serif;
+    --mono:         "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  /* ---- Global page chrome ---- */
+  html, body, gradio-app, .gradio-container {
+    background: var(--paper) !important;
+    color: var(--ink) !important;
+    font-family: var(--sans) !important;
+  }
+  .gradio-container { max-width: 1400px !important; padding: 0 28px 32px !important; }
+  footer, .footer, .show-api, .built-with { display: none !important; }
+
+  /* Subtle paper grain */
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image:
+      radial-gradient(circle at 20% 30%, rgba(0,0,0,0.025) 0, transparent 40%),
+      radial-gradient(circle at 80% 70%, rgba(0,0,0,0.02) 0, transparent 40%);
+    mix-blend-mode: multiply;
+  }
+
+  /* ---- Masthead ---- */
+  .masthead {
+    border-top: 4px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    padding: 18px 0 12px;
+    margin-bottom: 18px;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: end;
+    gap: 24px;
+  }
+  .masthead .meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    line-height: 1.6;
+  }
+  .masthead .meta.right { text-align: right; }
+  .masthead h1 {
+    font-family: var(--serif);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 78px;
+    line-height: 0.95;
+    letter-spacing: -0.02em;
+    margin: 0;
+    text-align: center;
+    color: var(--ink);
+  }
+  .masthead h1 .amp { font-style: italic; opacity: 0.5; }
+  .masthead .strap {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    text-align: center;
+    margin-top: 6px;
+    color: var(--ink-soft);
+  }
+  .masthead-rule {
+    height: 4px;
+    border-top: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    margin-bottom: 28px;
+  }
+
+  /* ---- Two-col grid via Gradio Row ---- */
+  #main-row { gap: 32px !important; align-items: stretch; }
+
+  /* Section headers — small caps editorial */
+  .sect-h {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 8px;
+    margin: 0 0 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .sect-h .num { font-style: italic; font-family: var(--serif); font-size: 14px; letter-spacing: 0; color: var(--ink); }
+
+  /* ---- Chat column ---- */
+  #chat-col { background: transparent; }
+
+  /* Gradio 6 Chatbot reset — targets actual DOM: #chatbot.block */
+  #chatbot, #chatbot > div, #chatbot .wrapper, .bubble-wrap {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: var(--ink) !important;
+  }
+  /* Gradio 6 message bubbles */
+  #chatbot .message-wrap, #chatbot .prose, #chatbot [class*="message"] {
+    background: transparent !important;
+    color: var(--ink) !important;
+  }
+  .message-row { padding: 0 !important; }
+  .message, #chatbot .message {
+    background: transparent !important;
+    border: none !important;
+    padding: 14px 0 !important;
+    border-bottom: 1px solid var(--rule-soft) !important;
+    border-radius: 0 !important;
+    color: var(--ink) !important;
+    font-family: var(--sans) !important;
+    font-size: 16px !important;
+    line-height: 1.55 !important;
+    max-width: 100% !important;
+  }
+  .message.user, #chatbot [data-testid="user"] {
+    font-family: var(--serif) !important;
+    font-size: 22px !important;
+    font-style: italic !important;
+    line-height: 1.3 !important;
+    color: var(--ink) !important;
+    background: transparent !important;
+  }
+  .message.user::before {
+    content: "Q.";
+    font-family: var(--mono); font-style: normal;
+    font-size: 11px; letter-spacing: 0.2em;
+    color: var(--gavel); margin-right: 10px; vertical-align: 2px;
+  }
+  .message.bot::before {
+    content: "VERDICT —";
+    display: block;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.3em;
+    color: var(--gavel); margin-bottom: 8px;
+  }
+  .message strong, .message b { font-weight: 600; }
+  .message em, .message i { font-family: var(--serif); font-size: 1.05em; }
+
+  /* Hide Gradio avatar block (but not the .role flex-wrap that holds message content in v6+) */
+  .avatar-container { display: none !important; }
+
+  /* ---- Input row ---- */
+  #input-row {
+    border-top: 2px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    padding: 12px 0 !important;
+    margin-top: 18px !important;
+    gap: 12px !important;
+  }
+  #msg-input textarea, #msg-input input {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    font-family: var(--serif) !important;
+    font-size: 22px !important;
+    font-style: italic !important;
+    color: var(--ink) !important;
+    padding: 8px 4px !important;
+  }
+  #msg-input textarea::placeholder { color: var(--ink-soft) !important; opacity: 0.55; }
+  #msg-input { background: transparent !important; border: none !important; }
+
+  #send-btn, #clear-btn {
+    background: var(--ink) !important;
+    color: var(--paper) !important;
+    font-family: var(--mono) !important;
+    font-size: 11px !important;
+    letter-spacing: 0.25em !important;
+    text-transform: uppercase !important;
+    border-radius: 0 !important;
+    border: none !important;
+    padding: 14px 22px !important;
+    box-shadow: none !important;
+  }
+  #send-btn:hover, #clear-btn:hover { background: var(--gavel) !important; }
+  #clear-btn {
+    background: transparent !important;
+    color: var(--ink-soft) !important;
+    border: 1px solid var(--rule-soft) !important;
+    margin-top: 14px;
+  }
+  #clear-btn:hover { color: var(--paper) !important; background: var(--ink) !important; border-color: var(--ink) !important; }
+
+  /* ---- The Floor (right column custom HTML) ---- */
+  .floor { display: flex; flex-direction: column; gap: 14px; }
+  .lane {
+    border: 1px solid var(--rule);
+    background: var(--paper);
+    padding: 14px 16px 16px;
+    position: relative;
+    transition: background 240ms ease, border-color 240ms ease;
+  }
+  .lane[data-state="active"] {
+    background: linear-gradient(180deg, var(--paper) 0%, var(--paper-2) 100%);
+    border-color: var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
+  }
+  .lane[data-state="done"] { opacity: 0.78; }
+  .lane[data-state="idle"] .lane-stream { opacity: 0.35; }
+
+  .lane-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+  .lane-num {
+    font-family: var(--serif); font-style: italic;
+    font-size: 32px; line-height: 1;
+    color: var(--lane-color, var(--ink));
+    min-width: 36px;
+  }
+  .lane-name {
+    font-family: var(--sans); font-size: 14px; font-weight: 500;
+    color: var(--ink); letter-spacing: -0.01em;
+    flex: 1;
+  }
+  .lane-name small {
+    display: block;
+    font-family: var(--mono); font-size: 9px;
+    letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--ink-soft); font-weight: 400; margin-top: 2px;
+  }
+  .lane-status {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.2em;
+    text-transform: uppercase; color: var(--ink-soft);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .lane-status .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--rule-soft);
+  }
+  .lane[data-state="active"] .lane-status .dot {
+    background: var(--lane-color, var(--ink));
+    box-shadow: 0 0 0 0 var(--lane-color, var(--ink));
+    animation: pulse 1.4s infinite;
+  }
+  .lane[data-state="done"] .lane-status .dot { background: var(--lane-color, var(--ink)); }
+  .lane[data-state="active"] .lane-status { color: var(--lane-color, var(--ink)); }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 var(--lane-color, var(--ink)); }
+    70%  { box-shadow: 0 0 0 8px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+
+  .lane-stream {
+    font-family: var(--mono); font-size: 12px; line-height: 1.65;
+    color: var(--ink); white-space: pre-wrap; word-break: break-word;
+    max-height: 140px; overflow-y: auto;
+    padding-top: 8px; border-top: 1px dashed var(--rule-soft);
+    transition: opacity 240ms ease;
+  }
+  .lane-stream:empty::before {
+    content: attr(data-placeholder);
+    color: var(--ink-soft); opacity: 0.5; font-style: italic;
+  }
+  .lane-stream::-webkit-scrollbar { width: 4px; }
+  .lane-stream::-webkit-scrollbar-thumb { background: var(--rule-soft); }
+
+  /* The judge lane is special */
+  .lane.judge { background: var(--ink); color: var(--paper); border-color: var(--ink); margin-top: 6px; }
+  .lane.judge .lane-num { color: var(--gavel); font-size: 38px; }
+  .lane.judge .lane-name { color: var(--paper); font-weight: 600; letter-spacing: 0.04em; }
+  .lane.judge .lane-name small { color: rgba(244,239,226,0.55); }
+  .lane.judge .lane-status { color: rgba(244,239,226,0.65); }
+  .lane.judge .lane-stream { color: rgba(244,239,226,0.92); border-top-color: rgba(244,239,226,0.18); }
+  .lane.judge[data-state="active"] { box-shadow: 4px 4px 0 var(--gavel); }
+  .lane.judge .gavel-mark {
+    position: absolute; top: 12px; right: 14px;
+    font-family: var(--serif); font-style: italic; font-size: 18px;
+    color: var(--gavel); opacity: 0.85;
+  }
+
+  /* Floor footer — connection state */
+  .floor-foot {
+    margin-top: 4px; padding-top: 10px;
+    border-top: 1px solid var(--rule-soft);
+    display: flex; justify-content: space-between;
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.22em;
+    text-transform: uppercase; color: var(--ink-soft);
+  }
+  .floor-foot .conn-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--ink-soft); margin-right: 6px; vertical-align: 1px;
+  }
+  .floor-foot[data-conn="live"]    .conn-dot { background: oklch(0.65 0.16 145); }
+  .floor-foot[data-conn="waiting"] .conn-dot { background: var(--gold); }
+
+  /* Hide Gradio default markdown headers from the chatbot Markdown widget */
+  .prose h1, .prose h2, .prose h3 { font-family: var(--serif) !important; font-weight: 400 !important; }

@@ -1,0 +1,10 @@
+{context}
+
+### YOUR TASK
+Think step by step, then respond:
+1. Is the question framed correctly, or does the framing hide a better question? State it if so.
+2. What is one non-obvious but realistic alternative the user probably hasn't considered? (State who this applies to.)
+3. What assumption does the conventional answer rely on that may not hold for this user?
+4. Give your recommendation — which may be the conventional answer, a reframe, or an alternative — in 2 sentences.
+
+Each alternative must be actionable for a team without specialist knowledge. Keep your total response under 300 words.
