@@ -21,6 +21,8 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+from reasoning_tools import try_local_tool
+
 _DQUOTE = chr(34)   # "
 _SQUOTE = chr(39)   # '
 
@@ -169,7 +171,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not API_KEY:
             return self._text(502, "relay: OPENROUTER_API_KEY not set")
         try:
-            self._text(200, request_completion(msg))
+            tool_answer = try_local_tool(msg)
+            self._text(200, tool_answer if tool_answer is not None else request_completion(msg))
         except urllib.error.HTTPError as e:
             self._text(502, "relay: openrouter http %d" % e.code)
         except Exception as e:
