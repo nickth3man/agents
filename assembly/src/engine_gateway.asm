@@ -9,6 +9,7 @@
 extern copy_bytes
 extern u32_to_dec
 extern mem_find
+extern bytes_eq
 extern send_all
 extern gateway_req
 extern gateway_resp
@@ -32,6 +33,8 @@ GW_REQ_PFX_LEN equ $-gw_req_pfx
 gw_req_sfx: db 13,10,"Connection: close",13,10,13,10
 GW_REQ_SFX_LEN equ $-gw_req_sfx
 gw_crlf:    db 13,10,13,10
+gw_ok_status: db "HTTP/1.1 200"
+GW_OK_STATUS_LEN equ $-gw_ok_status
 gw_ct:      db "text/plain; charset=utf-8"
 GW_CT_LEN   equ $-gw_ct
 gw_timeout_ms: dd 60000              ; long recv timeout for model latency
@@ -140,6 +143,16 @@ gateway_generate:
     add     [gw_used], r11
     jmp     .gw_read
 .gw_read_done:
+    ; Reject relay HTTP errors instead of forwarding their text as a 200 reply.
+    cmp     qword [gw_used], GW_OK_STATUS_LEN
+    jb      .fail502_close
+    lea     rcx, [rel gateway_resp]
+    mov     rdx, GW_OK_STATUS_LEN
+    lea     r8,  [gw_ok_status]
+    mov     r9,  GW_OK_STATUS_LEN
+    call    bytes_eq
+    test    eax, eax
+    jz      .fail502_close
     ; locate header/body split
     lea     rcx, [rel gateway_resp]
     mov     rdx, [gw_used]

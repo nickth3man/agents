@@ -16,6 +16,7 @@ import socketserver
 import json
 import os
 import sys
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -49,14 +50,70 @@ RELAY_PORT = int(os.environ.get("RELAY_PORT", "8081"))
 OR_URL = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT = 60.0
 MAX_IN = 8192
+UPSTREAM_ATTEMPTS = 3
 SYSTEM_PROMPT = """You are a precise, capable assistant. Answer correctly and
 directly. Treat every explicit output constraint from the user as mandatory.
 When the user asks for an exact form, only the answer, or no other text, emit
 only that content: no preamble, explanation, label, or Markdown fence.
 Otherwise give the minimum detail needed to answer well. Silently verify
-arithmetic, logic, and factual cause-and-effect claims before responding. If
-the available information is insufficient, state that clearly instead of
-inventing an answer."""
+arithmetic, logic, factual cause-and-effect claims, and requested text
+transformations before responding. For transformations, compare the result to
+the source and ensure no requested token was lost. If the available information
+is insufficient, state that clearly instead of inventing an answer."""
+
+
+def extract_reply(data):
+    """Return non-empty text from an OpenAI-compatible response."""
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("missing choices")
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        raise ValueError("missing message")
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        joined = "".join(parts).strip()
+        if joined:
+            return joined
+    raise ValueError("empty content")
+
+
+def request_completion(msg):
+    """Call OpenRouter, retrying transient HTTP and zero-content responses."""
+    payload = json.dumps(
+        {
+            "model": MODEL,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": msg},
+            ],
+        }
+    ).encode("utf-8")
+    last_error = None
+    for attempt in range(UPSTREAM_ATTEMPTS):
+        req = urllib.request.Request(OR_URL, data=payload, method="POST")
+        req.add_header("Authorization", "Bearer " + API_KEY)
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            return extract_reply(data)
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in (408, 409, 429) and exc.code < 500:
+                raise
+        except (json.JSONDecodeError, TypeError, ValueError, KeyError, IndexError) as exc:
+            last_error = exc
+        if attempt + 1 < UPSTREAM_ATTEMPTS:
+            time.sleep(0.25 * (attempt + 1))
+    raise last_error
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -89,24 +146,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         msg = self.rfile.read(n).decode("utf-8", "replace")
         if not API_KEY:
             return self._text(502, "relay: OPENROUTER_API_KEY not set")
-        payload = json.dumps(
-            {
-                "model": MODEL,
-                "temperature": 0,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": msg},
-                ],
-            }
-        ).encode("utf-8")
-        req = urllib.request.Request(OR_URL, data=payload, method="POST")
-        req.add_header("Authorization", "Bearer " + API_KEY)
-        req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-                data = json.loads(r.read().decode("utf-8"))
-            reply = data["choices"][0]["message"]["content"].strip()
-            self._text(200, reply if reply else "(empty model reply)")
+            self._text(200, request_completion(msg))
         except urllib.error.HTTPError as e:
             self._text(502, "relay: openrouter http %d" % e.code)
         except Exception as e:
