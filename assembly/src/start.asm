@@ -1,9 +1,10 @@
 ; ===========================================================================
-; src/start.asm - program entry point + main accept/echo loop (PLAN M2)
+; src/start.asm - program entry + accept/respond loop (PLAN Milestone 4)
 ; ===========================================================================
 %include "win64.inc"
 %include "winapi.inc"
 %include "winsock.inc"
+%include "http.inc"
 %include "config.inc"
 %include "generated/version.inc"
 
@@ -12,79 +13,90 @@ default rel
 extern net_init
 extern net_shutdown
 extern apply_timeouts
-extern send_all
+extern http_read_request
+extern route_request
+extern resp_set_error
+extern http_respond
 extern log_err
 extern log_str
+extern log_request
 extern listen_sock
 extern client_sock
-extern recv_buf
+extern req_id
+extern resp_body_len
+extern debug_canaries_init
+extern debug_canaries_check
 
 section .data
 banner:
     db  "[startup] build=", BUILD_ID, " listen=127.0.0.1:8080", 10
 BANNER_LEN  equ $-banner
-s_accept:   db "accept"
+s_accept:    db "accept"
 S_ACCEPT_LEN equ $-s_accept
-s_recv:     db "recv"
-S_RECV_LEN  equ $-s_recv
 
 section .text
 
 ; ---------------------------------------------------------------------------
 ; start - true OS entry point (no caller, never returns).
-; Brings up the listener, then loops: accept -> recv/echo until peer close ->
-; closesocket. Accept failure is fatal; recv errors close the client and
-; continue to the next accept.
-; Alignment: `and rsp,-16; sub rsp,48` keeps rsp≡0 at every call site.
+;   accept -> read+parse -> route -> respond -> close.
+; Alignment: and rsp,-16; sub rsp,64 keeps rsp≡0 at every call site.
 ; ---------------------------------------------------------------------------
 global start
 start:
-    and     rsp, -16                 ; force 16-byte alignment
-    sub     rsp, 48                  ; shadow(32)+16; aligned
-    ; --- startup banner ---
+    and     rsp, -16
+    sub     rsp, 64
     lea     rcx, [banner]
     mov     rdx, BANNER_LEN
     call    log_str
-    ; --- bring up winsock + listener ---
-    call    net_init                 ; rax = listen socket (also stored globally)
-    ; ===================== accept loop =====================
+    call    debug_canaries_init
+    call    net_init
 .accept_loop:
     mov     rcx, [listen_sock]
-    xor     edx, edx                 ; addr = NULL
-    xor     r8d, r8d                 ; addrlen = NULL
+    xor     edx, edx
+    xor     r8d, r8d
     call    accept
     cmp     rax, INVALID_SOCKET
     je      .accept_failed
     mov     [client_sock], rax
+    inc     qword [req_id]           ; per-request id for logging (PLAN §4.4)
     mov     rcx, rax
     call    apply_timeouts
-    ; ---------------- recv/echo until peer closes ----------------
-.recv_loop:
     mov     rcx, [client_sock]
-    lea     rdx, [recv_buf]
-    mov     r8,  CAP_REQUEST         ; bounded read window
-    xor     r9d, r9d                 ; flags = 0
-    call    recv
-    mov     r11d, eax                ; capture bytes (zero-extended 32-bit)
-    test    r11d, r11d
-    js      .recv_failed             ; SOCKET_ERROR
-    je      .client_done             ; 0 = orderly peer shutdown
-    ; echo exactly what we received
-    mov     rcx, [client_sock]
-    lea     rdx, [recv_buf]
-    mov     r8,  r11
-    call    send_all
+    call    http_read_request        ; rax = 0 ok, or HTTP status
+    mov     [rsp+0x30], rax
+    call    debug_canaries_check
     test    eax, eax
-    jnz     .client_done             ; send error -> drop client
-    jmp     .recv_loop
-.client_done:
+    jnz     .canary_err
+    mov     rax, [rsp+0x30]
+    test    eax, eax
+    jnz     .read_err
+    call    route_request            ; rax = status; resp globals set
+    mov     [rsp+0x30], rax
+    call    debug_canaries_check
+    test    eax, eax
+    jnz     .canary_err
+    mov     rax, [rsp+0x30]
+    jmp     .respond
+.canary_err:
+    mov     eax, HTTP_500
+    call    resp_set_error
+    jmp     .respond
+.read_err:
+    call    resp_set_error           ; sets err body; preserves eax (the code)
+.respond:
+    mov     [rsp+0x30], eax          ; save status across http_respond
     mov     rcx, [client_sock]
-    call    closesocket
-    jmp     .accept_loop
-.recv_failed:
-    lea     rcx, [s_recv]
-    mov     rdx, S_RECV_LEN
-    call    log_err
+    mov     edx, eax
+    call    http_respond
+    ; structured request log (PLAN §4.4)
+    mov     rcx, [rsp+0x30]          ; status
+    mov     rdx, [resp_body_len]     ; out bytes
+    call    log_request
+    ; graceful close: signal FIN so the response is delivered before close
+    ; (avoids RST discarding the reply when the request had an unread body)
+    mov     rcx, [client_sock]
+    mov     edx, SD_SEND
+    call    shutdown
     mov     rcx, [client_sock]
     call    closesocket
     jmp     .accept_loop
@@ -93,5 +105,13 @@ start:
     mov     rdx, S_ACCEPT_LEN
     call    log_err
     mov     rcx, 1
-    call    net_shutdown             ; exits
+    call    net_shutdown
     ud2
+
+; dev-loop test: harmless comment 1784166174
+
+; harmless 1784166273389101600
+
+; harmless 1784166399107126600
+
+; harmless 1784166506784326500

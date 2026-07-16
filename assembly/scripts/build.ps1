@@ -17,11 +17,12 @@ param(
     [switch]$Preflight,
     [string]$NasmPath   = $env:NASM_PATH,
     [string]$GoLinkPath = $env:GOLINK_PATH,
+    [string]$LinkPath   = $env:LINK_PATH,
     [string]$BuildId,
     [ValidateSet('Debug','Release')] [string]$Config = 'Release',
     [ValidateSet('golink','msvc')] [string]$Linker = 'golink',
     # Modules to link (grown per milestone). Assembled set is always src/*.asm.
-    [string[]]$LinkModules = @('state','decimal','log','net_init','net_io','start'),
+    [string[]]$LinkModules = @('state','decimal','text','log','http_read','http_parse','http_write','router','assets','engine_gateway','net_init','net_io','start'),
     # DLLs to hand to GoLink for import resolution (grown per milestone).
     [string[]]$LinkDlls    = @('kernel32.dll','ws2_32.dll'),
     [string]$OutName = 'chat-agent',     # M1 was abi-hello; server artifact is chat-agent
@@ -39,6 +40,11 @@ function Find-Tool {
     if ($Hint -and (Test-Path $Hint)) { return (Resolve-Path $Hint).Path }
     $c = Get-Command $Name -ErrorAction SilentlyContinue
     if ($c) { return $c.Source }
+    # GoLink is intentionally vendored so a clean checkout needs only NASM.
+    if ($Name -ieq 'GoLink.exe') {
+        $bundled = Join-Path $repoRoot 'tools\golink\GoLink.exe'
+        if (Test-Path $bundled) { return (Resolve-Path $bundled).Path }
+    }
     return $null
 }
 
@@ -60,14 +66,30 @@ function Find-Dumpbin {
     return $null
 }
 
+function Find-WindowsSdkLibPath {
+    $roots = @(
+        "${env:ProgramFiles(x86)}\Windows Kits\10\Lib",
+        "$env:ProgramFiles\Windows Kits\10\Lib"
+    )
+    foreach ($root in $roots) {
+        if (-not (Test-Path $root)) { continue }
+        foreach ($version in (Get-ChildItem $root -Directory | Sort-Object Name -Descending)) {
+            $candidate = Join-Path $version.FullName 'um\x64'
+            if (Test-Path (Join-Path $candidate 'kernel32.lib')) { return $candidate }
+        }
+    }
+    return $null
+}
+
 # ---------------------------------------------------------------------------
 # Preflight (PLAN Milestone 0 deliverable + acceptance test)
 # ---------------------------------------------------------------------------
 function Invoke-Preflight {
-    $tools = [ordered]@{ 'nasm'=''; 'GoLink'=''; 'curl'='' }
+    $tools = [ordered]@{ 'nasm'=''; 'curl'='' }
     $tools['nasm']   = Find-Tool 'nasm.exe'   $NasmPath
-    $tools['GoLink'] = Find-Tool 'GoLink.exe' $GoLinkPath
     $tools['curl']   = Find-Tool 'curl.exe'   $null
+    if ($Linker -eq 'golink') { $tools['GoLink'] = Find-Tool 'GoLink.exe' $GoLinkPath }
+    else                      { $tools['link']   = Find-Tool 'link.exe'   $LinkPath }
 
     Write-Host '== build.ps1 preflight =='
     $missing = 0
@@ -76,6 +98,7 @@ function Invoke-Preflight {
             $ver = switch ($k) {
                 'nasm'   { (& $tools[$k] -v 2>$null | Select-Object -First 1) }
                 'GoLink' { (& $tools[$k] /? 2>$null | Select-Object -First 1) }
+                'link'   { (& $tools[$k] /? 2>$null | Select-Object -First 1) }
                 'curl'   { (& $tools[$k] --version 2>$null | Select-Object -First 1) }
             }
             if (-not $ver) { $ver = '(present; version query returned nothing)' }
@@ -89,7 +112,8 @@ function Invoke-Preflight {
         Write-Host ""
         Write-Host "PREFLIGHT FAILED: $missing required tool(s) missing."
         Write-Host "  NASM   : https://www.nasm.us/   (winget install nasm)"
-        Write-Host "  GoLink : https://www.godevtool.com/"
+        if ($Linker -eq 'golink') { Write-Host "  GoLink : https://www.godevtool.com/" }
+        else { Write-Host "  link   : install Visual Studio Build Tools and run from a Developer PowerShell" }
         exit 1
     }
     Write-Host "PREFLIGHT OK"
@@ -152,9 +176,9 @@ function Assert-ChatHtml {
 # ---------------------------------------------------------------------------
 function Invoke-Build {
     $nasm   = Find-Tool 'nasm.exe'   $NasmPath
-    $golink = Find-Tool 'GoLink.exe' $GoLinkPath
-    if (-not $nasm -or -not $golink) {
-        Write-Error "Run -Preflight first: missing tool (nasm=$nasm golink=$golink)."; exit 1
+    $linkTool = if ($Linker -eq 'golink') { Find-Tool 'GoLink.exe' $GoLinkPath } else { Find-Tool 'link.exe' $LinkPath }
+    if (-not $nasm -or -not $linkTool) {
+        Write-Error "Run -Preflight first: missing tool (nasm=$nasm linker=$linkTool)."; exit 1
     }
 
     $buildId = New-BuildId $BuildId
@@ -196,12 +220,21 @@ function Invoke-Build {
         ,$o
     }
     $exe = Join-Path $buildDir "$OutName.exe"
-    $golinkArgs = @('/entry',$Entry,'/console','/nxcompat','/dynamicbase',
-                    '/largeaddressaware','/fo',$exe) + $linkObjs + $LinkDlls
-    Write-Host "  GoLink -> $OutName.exe"
-    & $golink $golinkArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
+    if ($Linker -eq 'golink') {
+        $linkArgs = @('/entry',$Entry,'/console','/nxcompat','/dynamicbase',
+                      '/largeaddressaware','/fo',$exe) + $linkObjs + $LinkDlls
+        Write-Host "  GoLink -> $OutName.exe"
+    } else {
+        $libs = $LinkDlls | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_) + '.lib' }
+        $sdkLib = Find-WindowsSdkLibPath
+        if (-not $sdkLib) { throw 'Windows SDK x64 import libraries not found' }
+        $linkArgs = @('/MACHINE:X64','/SUBSYSTEM:CONSOLE',"/ENTRY:$Entry",'/NODEFAULTLIB',
+                      '/DYNAMICBASE','/NXCOMPAT',"/LIBPATH:$sdkLib", "/OUT:$exe") + $linkObjs + $libs
+        Write-Host "  link.exe -> $OutName.exe"
+    }
+    & $linkTool $linkArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) {
-        Write-Host "LINK FAILED (GoLink exit $LASTEXITCODE). Build dir: $buildDir"
+        Write-Host "LINK FAILED ($Linker exit $LASTEXITCODE). Build dir: $buildDir"
         exit 1
     }
 
@@ -209,6 +242,11 @@ function Invoke-Build {
     $curDir = Join-Path $repoRoot 'out\current'
     New-Item -ItemType Directory -Force -Path $curDir | Out-Null
     Copy-Item $exe (Join-Path $curDir "$OutName.exe") -Force
+    if ($Config -eq 'Release') {
+        $distDir = Join-Path $repoRoot 'dist'
+        New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+        Copy-Item $exe (Join-Path $distDir "$OutName.exe") -Force
+    }
     $buildId | Set-Content (Join-Path $buildDir 'BUILD_ID') -NoNewline
 
     Write-Host ""

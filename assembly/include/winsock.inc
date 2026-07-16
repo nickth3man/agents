@@ -15,9 +15,11 @@ extern setsockopt           ; RCX=sock RDX=level R8=optname R9=optval [rsp+32]=o
 extern bind                 ; RCX=sock RDX=&sockaddr R8=namelen -> RAX=int
 extern listen               ; RCX=sock RDX=backlog -> RAX=int
 extern accept               ; RCX=sock RDX=&addr R8=&addrlen -> RAX=SOCKET
+extern connect              ; RCX=sock RDX=&sockaddr R8=len -> RAX=int
 extern recv                 ; RCX=sock RDX=buf R8=len R9=flags -> RAX=int
 extern send                 ; RCX=sock RDX=buf R8=len R9=flags -> RAX=int
 extern closesocket          ; RCX=sock -> RAX=int
+extern shutdown             ; RCX=sock RDX=how -> RAX=int
 extern htons                ; RCX=u_short -> RAX=u_short (network order)
 
 ; --- Families / types / protocols -----------------------------------------
@@ -37,6 +39,11 @@ extern htons                ; RCX=u_short -> RAX=u_short (network order)
 %define INVALID_SOCKET      0xFFFFFFFFFFFFFFFF
 %define SOCKET_ERROR        -1              ; returned as int (EAX)
 
+; shutdown() "how" values
+%define SD_RECV             0
+%define SD_SEND             1
+%define SD_BOTH             2
+
 ; --- Common WSAGetLastError codes -----------------------------------------
 %define WSAETIMEDOUT        10060
 %define WSAEADDRINUSE       10048
@@ -54,6 +61,10 @@ extern htons                ; RCX=u_short -> RAX=u_short (network order)
 ;   ip 127.0.0.1 -> store DWORD 0x0100007F (memory: 7F 00 00 01 = 127.0.0.1)
 %define PORT_8080_NET       0x901F
 %define IP_127_0_0_1_NET    0x0100007F
+
+; Relay (PLAN §2.10, Milestone 8): localhost text/plain -> OpenRouter.
+%define RELAY_PORT          8081
+%define PORT_8081_NET       0x911F      ; htons(8081)
 
 ; --- WSADATA layout (Win64, 402 bytes total) ------------------------------
 %define WSADATA_SIZE        402

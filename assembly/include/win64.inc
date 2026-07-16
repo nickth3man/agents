@@ -23,6 +23,15 @@
 ;   2. One consistent function-frame pattern across the codebase.
 ;   3. Large buffers in .bss, never on the stack.
 ;   4. Counted strings as (pointer, length) pairs; NUL only when an API needs it.
+;   5. ADDRESSING (ASLR-safe, MANDATORY): every module begins with `default rel`.
+;      RIP-relative `[rel label]` is ASLR-safe and needs no relocation. BUT
+;      RIP-relative CANNOT take an index register, so `[label + reg]` silently
+;      becomes ABSOLUTE and GoLink does NOT relocate the imm64 under /dynamicbase
+;      -> wrong pointer at runtime -> crash. Therefore NEVER write
+;      `[label + reg]`; compute in two steps:
+;          lea rax, [rel label]   ; RIP-relative address of label
+;          add rax, <reg>         ; then add any register offset
+;      Plain `[label]` (no index) is fine under `default rel`.
 ;
 ; ---------------------------------------------------------------------------
 ; Contract-comment template (paste at top of every callable routine):

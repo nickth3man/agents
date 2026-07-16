@@ -16,20 +16,21 @@
 %define CAP_HEADERS      6144          ; max header bytes
 %define CAP_CHAT_BODY    2048          ; max /chat body
 %define CAP_RESP_HDR     512           ; response-header workspace
-%define CAP_ELIZA_IN     2048          ; normalized input
-%define CAP_ELIZA_OUT    4096          ; reply text
 %define CAP_LOG_LINE     512           ; one structured log line
 %define CAP_GATEWAY_RESP 16384         ; optional LLM gateway response
 
+; Debug guards placed immediately around critical static buffers.
+%define CANARY_VALUE     0xA55AA55AA55AA55A
+
 ; --- Build modes -----------------------------------------------------------
-; DEBUG=1 enables canaries + forced-small-chunk I/O caps (PLAN §2.5, §2.7).
+; DEBUG=1 enables forced-small-chunk I/O caps (PLAN §2.5).
 ; Set DEBUG=0 via command-line -DDEBUG=0 for a release build.
 %ifndef DEBUG
 %define DEBUG 1
 %endif
 
 ; Forced small chunk caps (debug only) to exercise split-header/body paths.
-%ifdef DEBUG
+%if DEBUG
 %define DBG_RECV_CHUNK   7
 %define DBG_SEND_CHUNK   13
 %endif

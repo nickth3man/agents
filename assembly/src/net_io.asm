@@ -37,6 +37,12 @@ send_all:
     mov     rcx, rbx             ; sock
     mov     rdx, rsi             ; buf
     mov     r8,  r12             ; len
+%if DEBUG
+    cmp     r8, DBG_SEND_CHUNK
+    jbe     .send_chunk_ready
+    mov     r8, DBG_SEND_CHUNK
+.send_chunk_ready:
+%endif
     xor     r9d, r9d             ; flags = 0
     call    send                 ; eax = bytes sent, or SOCKET_ERROR (-1)
     mov     r10d, eax            ; capture as zero-extended 32-bit
