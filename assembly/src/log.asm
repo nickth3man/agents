@@ -10,6 +10,8 @@ extern u32_to_dec
 extern log_scratch
 extern last_wsa
 
+default rel
+
 section .data
 err_pfx:    db  "[error] stage="
 ERR_PFX_LEN equ $-err_pfx
@@ -108,7 +110,7 @@ _emit_err_line:
     call    copy_bytes
     add     r13, ERR_MID_LEN
     ; <code>
-    mov     rcx, r12d            ; value
+    mov     ecx, r12d            ; value (32-bit -> rcx zero-extended)
     mov     rdx, r13             ; buf
     mov     r8,  16              ; cap
     call    u32_to_dec           ; rax = digit count
@@ -119,10 +121,11 @@ _emit_err_line:
     mov     rdx, ERR_NL_LEN
     call    copy_bytes
     add     r13, ERR_NL_LEN
-    ; emit
-    mov     rcx, log_scratch
-    mov     rdx, r13
-    sub     rdx, log_scratch
+    ; emit: rcx=buf, rdx=len
+    lea     r11, [rel log_scratch]   ; start address (volatile scratch reg)
+    mov     rdx, r13                 ; cursor
+    sub     rdx, r11                 ; length = cursor - start
+    mov     rcx, r11                 ; buf = start
     call    log_str
     add     rsp, 32
     pop     r14

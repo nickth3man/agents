@@ -1,0 +1,18 @@
+# Per-build artifacts (objects, listings, executables, logs)
+out/
+
+# Final stable release output (built, not committed)
+dist/
+
+# Generated build-ID file (written by build.ps1 on every build)
+generated/version.inc
+# Per-machine build counter (build-ID suffix source)
+generated/.buildcount
+
+# Editor / OS noise
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+nul

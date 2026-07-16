@@ -12,6 +12,8 @@ extern excl_enable
 extern log_err
 extern log_err_code
 
+default rel
+
 section .data
 ; sockaddr_in for bind: AF_INET, port 8080 (net order), 127.0.0.1 (net order).
 global listen_addr
@@ -35,10 +37,6 @@ S_LISTEN_LEN  equ $-s_listen
 s_clean:    db "wsacleanup"
 S_CLEAN_LEN   equ $-s_clean
 
-; startup banner
-banner:     db "[startup] listen=127.0.0.1:8080",10
-BANNER_LEN  equ $-banner
-
 section .text
 
 ; ---------------------------------------------------------------------------
@@ -61,7 +59,7 @@ net_init:
     call    WSAStartup
     test    eax, eax
     jz      .socket_create
-    mov     rcx, s_startup
+    lea     rcx, [rel s_startup]
     mov     rdx, S_STARTUP_LEN
     mov     r8,  rax             ; WSAStartup returns code directly
     call    log_err_code
@@ -75,7 +73,7 @@ net_init:
     call    socket
     cmp     rax, INVALID_SOCKET
     jne     .have_sock
-    mov     rcx, s_socket
+    lea     rcx, [rel s_socket]
     mov     rdx, S_SOCKET_LEN
     call    log_err
     mov     rcx, 1
@@ -92,7 +90,7 @@ net_init:
     call    setsockopt
     test    eax, eax
     jz      .do_bind
-    mov     rcx, s_setopt
+    lea     rcx, [rel s_setopt]
     mov     rdx, S_SETOPT_LEN
     call    log_err
     ; non-fatal: continue to bind (the option is a hardening measure)
@@ -104,7 +102,7 @@ net_init:
     call    bind
     test    eax, eax
     jz      .do_listen
-    mov     rcx, s_bind
+    lea     rcx, [rel s_bind]
     mov     rdx, S_BIND_LEN
     call    log_err
     mov     rcx, 1
@@ -116,7 +114,7 @@ net_init:
     call    listen
     test    eax, eax
     jz      .ok
-    mov     rcx, s_listen
+    lea     rcx, [rel s_listen]
     mov     rdx, S_LISTEN_LEN
     call    log_err
     mov     rcx, 1
