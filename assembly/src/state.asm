@@ -83,6 +83,12 @@ gateway_req:     resb CAP_GATEWAY_REQ ; request JSON, then decoded model reply
 global gateway_resp
 gateway_resp:    resb CAP_GATEWAY_RESP ; raw OpenRouter response JSON
 gateway_guard_hi: resq 1
+global gateway_draft
+gateway_draft:   resb CAP_GATEWAY_DRAFT
+global decode_target_ptr
+decode_target_ptr: resq 1
+global decode_target_cap
+decode_target_cap: resq 1
 global gateway_api_key
 gateway_api_key: resb CAP_API_KEY
 global gateway_model

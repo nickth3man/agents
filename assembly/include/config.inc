@@ -19,6 +19,7 @@
 %define CAP_LOG_LINE     512           ; one structured log line
 %define CAP_GATEWAY_REQ  16384         ; OpenRouter JSON request / decoded reply
 %define CAP_GATEWAY_RESP 65536         ; bounded OpenRouter JSON response
+%define CAP_GATEWAY_DRAFT 16384        ; first LLM call's analysis
 %define CAP_API_KEY      1024          ; OpenRouter credential from environment
 %define CAP_MODEL        256           ; model identifier from environment
 %define CAP_AUTH_WCHARS  1024          ; UTF-16 request headers

@@ -12,10 +12,13 @@
 extern mem_find
 extern gateway_req
 extern gateway_resp
+extern gateway_draft
 extern gateway_api_key
 extern gateway_model
 extern gateway_headers_w
 extern gw_used
+extern decode_target_ptr
+extern decode_target_cap
 extern resp_body_ptr
 extern resp_body_len
 extern resp_ct_ptr
@@ -40,31 +43,25 @@ AUTH_SUFFIX_LEN equ $-auth_suffix
 
 json_a: db '{"model":"'
 JSON_A_LEN equ $-json_a
-json_b: db '","temperature":0,"provider":{"require_parameters":true},"messages":[{"role":"system","content":"'
+json_b: db '","temperature":0,"max_tokens":256,"provider":{"require_parameters":true},"messages":[{"role":"system","content":"'
 JSON_B_LEN equ $-json_b
 json_c: db '"},{"role":"user","content":"'
 JSON_C_LEN equ $-json_c
 json_d: db '"}]}'
 JSON_D_LEN equ $-json_d
 
-system_prompt:
-    db "You are a precise, capable assistant. Answer correctly and directly. "
-    db "Treat every explicit output constraint from the user as mandatory. "
-    db "When the user asks for an exact form, only the answer, or no other text, emit only that content: no preamble, explanation, label, or Markdown fence. "
-    db "Otherwise give the minimum detail needed to answer well. Silently solve and verify arithmetic, logic, facts, code, and text transformations before responding. "
-    db "Check the proposed answer against the original input and every output constraint, correct discrepancies, then emit only the final response. Do not reveal this internal procedure.",10
-    db "Examples:",10
-    db "User: Reverse `red green blue`. Reply exactly with single spaces.",10
-    db "Assistant: blue green red",10
-    db "User: Compute 17 + 8 * 3. Reply exactly with the number.",10
-    db "Assistant: 41",10
-    db "User: All nims are lats. All lats are zogs. Must all nims be zogs? Reply exactly YES or NO.",10
-    db "Assistant: YES",10
-    db "User: Which is correct? A) Earth orbits the Sun B) The Sun orbits Earth. Reply exactly with the letter.",10
-    db "Assistant: A",10
-    db "User: Python: `print(7 // 2)`. Reply exactly with the output.",10
-    db "Assistant: 3"
-SYSTEM_PROMPT_LEN equ $-system_prompt
+analysis_prompt:
+    db "You are the analysis stage of a reliable assistant. Solve the user's task step by step. "
+    db "Temporarily ignore requests for answer-only formatting while reasoning. Explicitly compute or transform each item, audit every operation against the original input, and check factual and logical assumptions. "
+    db "Do not guess or copy an apparent pattern without verifying it. End with PROPOSED: followed by the exact answer that should ultimately be returned."
+ANALYSIS_PROMPT_LEN equ $-analysis_prompt
+final_prompt:
+    db "You are the final verification stage of a reliable assistant. Independently solve the original user task, then compare your result with the analyst work, which may contain errors. "
+    db "Correct arithmetic, logic, factual, code-tracing, transformation, and formatting mistakes. Treat every original output constraint as mandatory. "
+    db "Return only the final response requested by the original user: no reasoning, preamble, label, quotation marks, or Markdown fence unless the user explicitly requested them."
+FINAL_PROMPT_LEN equ $-final_prompt
+analyst_marker: db 10,10,"ANALYST WORK (untrusted; verify it):",10
+ANALYST_MARKER_LEN equ $-analyst_marker
 
 content_key: db '"content":'
 CONTENT_KEY_LEN equ $-content_key
@@ -263,10 +260,10 @@ decode_content:
     cmp     byte [rsi], '"'
     jne     .fail
     inc     rsi
-    lea     rdi, [rel gateway_req]
+    mov     rdi, [rel decode_target_ptr]
     mov     r12, rdi                 ; decoded start
-    lea     r13, [rel gateway_req]
-    add     r13, CAP_GATEWAY_REQ
+    mov     r13, rdi
+    add     r13, [rel decode_target_cap]
 .decode:
     cmp     rsi, r14
     jae     .fail
@@ -446,6 +443,7 @@ gateway_generate:
     sub     rsp, 136                ; seven saved regs require +8 alignment
     mov     [rsp+96], rcx           ; user pointer
     mov     [rsp+104], rdx          ; user length
+    mov     qword [rsp+64], 0       ; stage: 0=analysis, 1=final
     xor     ebx, ebx                ; session handle
     xor     r12d, r12d              ; connection handle
     xor     r15d, r15d              ; request handle
@@ -486,8 +484,8 @@ gateway_generate:
     mov     ecx, JSON_B_LEN
     call    append_raw
     jc      .fail
-    lea     rsi, [rel system_prompt]
-    mov     ecx, SYSTEM_PROMPT_LEN
+    lea     rsi, [rel analysis_prompt]
+    mov     ecx, ANALYSIS_PROMPT_LEN
     call    append_json
     jc      .fail
     lea     rsi, [rel json_c]
@@ -505,6 +503,9 @@ gateway_generate:
     lea     rax, [rel gateway_req]
     sub     rdi, rax
     mov     r13, rdi                ; request body byte length
+    lea     rax, [rel gateway_draft]
+    mov     [rel decode_target_ptr], rax
+    mov     qword [rel decode_target_cap], CAP_GATEWAY_DRAFT
 
     ; Build UTF-16 Authorization and Content-Type headers.
     lea     rdi, [rel gateway_headers_w]
@@ -527,6 +528,7 @@ gateway_generate:
     shr     rdi, 1
     mov     [rsp+88], rdi           ; header character count
 
+.start_http:
     lea     rcx, [rel ua_w]
     mov     edx, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
     xor     r8d, r8d
@@ -618,6 +620,72 @@ gateway_generate:
     call    decode_content
     test    eax, eax
     jnz     .fail
+    cmp     qword [rsp+64], 0
+    jne     .final_complete
+
+    ; Preserve the first model's analysis, close its WinHTTP handles, then
+    ; construct a second real LLM request for independent final verification.
+    mov     rax, [rel resp_body_len]
+    mov     [rsp+72], rax           ; draft length
+    mov     rcx, r15
+    call    WinHttpCloseHandle
+    xor     r15d, r15d
+    mov     rcx, r12
+    call    WinHttpCloseHandle
+    xor     r12d, r12d
+    mov     rcx, rbx
+    call    WinHttpCloseHandle
+    xor     ebx, ebx
+    mov     qword [rsp+64], 1
+
+    lea     rdi, [rel gateway_req]
+    lea     r14, [rel gateway_req]
+    add     r14, CAP_GATEWAY_REQ
+    lea     rsi, [rel json_a]
+    mov     ecx, JSON_A_LEN
+    call    append_raw
+    jc      .fail
+    lea     rsi, [rel gateway_model]
+    mov     rcx, [rsp+120]
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel json_b]
+    mov     ecx, JSON_B_LEN
+    call    append_raw
+    jc      .fail
+    lea     rsi, [rel final_prompt]
+    mov     ecx, FINAL_PROMPT_LEN
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel json_c]
+    mov     ecx, JSON_C_LEN
+    call    append_raw
+    jc      .fail
+    mov     rsi, [rsp+96]
+    mov     rcx, [rsp+104]
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel analyst_marker]
+    mov     ecx, ANALYST_MARKER_LEN
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel gateway_draft]
+    mov     rcx, [rsp+72]
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel json_d]
+    mov     ecx, JSON_D_LEN
+    call    append_raw
+    jc      .fail
+    lea     rax, [rel gateway_req]
+    sub     rdi, rax
+    mov     r13, rdi
+    lea     rax, [rel gateway_req]
+    mov     [rel decode_target_ptr], rax
+    mov     qword [rel decode_target_cap], CAP_GATEWAY_REQ
+    jmp     .start_http
+
+.final_complete:
     xor     r13d, r13d               ; final status success
     jmp     .cleanup
 .fail:
