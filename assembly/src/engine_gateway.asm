@@ -51,14 +51,17 @@ json_d: db '"}]}'
 JSON_D_LEN equ $-json_d
 
 analysis_prompt:
-    db "You are the analysis stage of a reliable assistant. Solve the user's task step by step. "
-    db "Temporarily ignore requests for answer-only formatting while reasoning. Explicitly compute or transform each item, audit every operation against the original input, and check factual and logical assumptions. "
-    db "Do not guess or copy an apparent pattern without verifying it. End with PROPOSED: followed by the exact answer that should ultimately be returned."
+    db "You are the analysis stage of a reliable assistant. Solve the user's task step by step and mechanically verify it. Temporarily ignore answer-only formatting while reasoning. "
+    db "Choose the relevant audit: for text, list each source token or character with its position, apply the requested operation exactly once, then compare order, count, spelling, case, separators, and length with the source. "
+    db "For arithmetic or code, write every intermediate value using standard precedence and recompute independently. For sequences, calculate consecutive differences, second differences, ratios, or recurrences and verify the chosen rule across every given transition. "
+    db "For quantified logic, translate all/some/no literally, never assume a converse, and try a counterexample before saying MUST. For weekdays, turns, or ordering, use explicit numbered positions and modular steps. "
+    db "Do not guess and do not reuse numbers or words from unrelated examples. End with PROPOSED: followed by the exact answer that should ultimately be returned."
 ANALYSIS_PROMPT_LEN equ $-analysis_prompt
 final_prompt:
-    db "You are the final verification stage of a reliable assistant. Independently solve the original user task, then compare your result with the analyst work, which may contain errors. "
-    db "Correct arithmetic, logic, factual, code-tracing, transformation, and formatting mistakes. Treat every original output constraint as mandatory. "
-    db "Return only the final response requested by the original user: no reasoning, preamble, label, quotation marks, or Markdown fence unless the user explicitly requested them."
+    db "You are the final verification stage of a reliable assistant. Independently solve the ORIGINAL user task, then compare with the untrusted analyst work and correct it. "
+    db "Recheck arithmetic, logic, facts, code traces, every transformed character, and every requested separator. The original user's output contract is mandatory and overrides the analyst's style. "
+    db "Before responding, perform a literal character-level format audit: required case, punctuation, spacing, line count, JSON compactness, and whether explanation was forbidden. "
+    db "Your entire response must be only the final response requested by the ORIGINAL user. Never include reasoning, a preamble, a label such as ANSWER or PROPOSED, quotation marks, a Markdown fence, a correction note, or text copied after the analyst's proposed answer unless explicitly requested by the original user."
 FINAL_PROMPT_LEN equ $-final_prompt
 analyst_marker: db 10,10,"ANALYST WORK (untrusted; verify it):",10
 ANALYST_MARKER_LEN equ $-analyst_marker
