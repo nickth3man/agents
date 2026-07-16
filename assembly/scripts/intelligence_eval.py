@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run and objectively grade 200 intelligence prompts through asm-chat."""
+"""Run and objectively grade the complete intelligence suite through asm-chat."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from intelligence_cases import CASES, Case
 
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:8080/chat"
+DEFAULT_RELAY_HEALTH = "http://127.0.0.1:8081/"
 TIMEOUT_SECONDS = 75
 
 
@@ -74,9 +75,18 @@ def parse_ids(value: str | None) -> set[int] | None:
     return selected
 
 
+def read_relay_health(url: str) -> str:
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return response.read().decode("utf-8", "replace").strip()
+    except Exception as exc:
+        return f"unavailable: {type(exc).__name__}: {exc}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
+    parser.add_argument("--relay-health", default=DEFAULT_RELAY_HEALTH)
     parser.add_argument("--ids", help="Comma-separated IDs or ranges, e.g. 1-20,44")
     parser.add_argument("--label", default="run")
     args = parser.parse_args()
@@ -87,6 +97,8 @@ def main() -> int:
         parser.error("no cases selected")
 
     run_started = datetime.now(timezone.utc)
+    relay_health = read_relay_health(args.relay_health)
+    print(f"Relay: {relay_health}", flush=True)
     results = []
     for index, case in enumerate(selected, 1):
         status, response, latency, error = query(args.endpoint, case.prompt)
@@ -109,7 +121,7 @@ def main() -> int:
         results.append(item)
         marker = "PASS" if passed else "FAIL"
         print(
-            f"[{index:03d}/{len(selected):03d}] id={case.id:03d} {marker} "
+            f"[{index:04d}/{len(selected):04d}] id={case.id:04d} {marker} "
             f"{case.category:<23} status={status!s:<4} latency={latency:6.2f}s",
             flush=True,
         )
@@ -128,12 +140,26 @@ def main() -> int:
         "latency_mean_seconds": round(statistics.mean(latencies), 3),
         "latency_median_seconds": round(statistics.median(latencies), 3),
         "latency_max_seconds": max(latencies),
+        "by_category": {
+            category: {
+                "passed": sum(
+                    item["passed"] and item["category"] == category for item in results
+                ),
+                "failed": sum(
+                    (not item["passed"]) and item["category"] == category
+                    for item in results
+                ),
+                "total": sum(item["category"] == category for item in results),
+            }
+            for category in sorted({item["category"] for item in results})
+        },
     }
     payload = {
         "label": args.label,
         "started_at": run_started.isoformat(),
         "finished_at": finished.isoformat(),
         "endpoint": args.endpoint,
+        "relay_health": relay_health,
         "summary": summary,
         "results": results,
     }
@@ -141,7 +167,7 @@ def main() -> int:
     output_dir = Path(__file__).resolve().parent.parent / "out" / "evals"
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = run_started.strftime("%Y%m%dT%H%M%SZ")
-    stem = f"intelligence-200-{args.label}-{stamp}"
+    stem = f"intelligence-{len(CASES)}-{args.label}-{stamp}"
     json_path = output_dir / f"{stem}.json"
     md_path = output_dir / f"{stem}.md"
     json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -153,6 +179,7 @@ def main() -> int:
         f"- Started: {payload['started_at']}",
         f"- Finished: {payload['finished_at']}",
         f"- Score: **{passed_count}/{len(results)}**",
+        f"- Relay: `{relay_health}`",
         f"- Mean latency: {summary['latency_mean_seconds']:.3f}s",
         "",
     ]

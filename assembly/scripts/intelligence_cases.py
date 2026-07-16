@@ -7,6 +7,8 @@ are original variants so the suite measures reasoning instead of recall.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fractions import Fraction
+import json
 
 
 @dataclass(frozen=True)
@@ -271,7 +273,299 @@ def build_cases() -> list[Case]:
     for i, (prompt, expected) in enumerate(coding):
         add("medium" if i < 15 else "hard", "code-reasoning", "HumanEval-inspired original", prompt, expected)
 
-    assert len(cases) == 200
+    # 201-360: additional IFEval-style transformations and exact formatting.
+    colors = [
+        "red", "blue", "green", "amber", "violet", "silver", "gold", "black", "white", "coral",
+        "teal", "navy", "lime", "pink", "gray", "indigo", "bronze", "cream", "cyan", "maroon",
+    ]
+    animals = [
+        "ant", "bear", "cat", "dog", "eagle", "fox", "goat", "hare", "ibis", "jay",
+        "koala", "lynx", "mole", "newt", "otter", "panda", "quail", "raven", "seal", "tiger",
+    ]
+    for i in range(20):
+        phrase = f"Signal {colors[i].title()} {animals[i].title()}"
+        add("easy", "instruction-following", "IFEval-inspired generated", f"Convert `{phrase}` to lowercase. Reply exactly with the result.", phrase.lower())
+    for i in range(20):
+        phrase = f"quiet {colors[i]} {animals[(i + 3) % 20]}"
+        add("easy", "instruction-following", "IFEval-inspired generated", f"Convert `{phrase}` to uppercase. Reply exactly with the result.", phrase.upper())
+    for i in range(20):
+        words = [colors[i], animals[i], colors[(i + 7) % 20], animals[(i + 11) % 20]]
+        add("easy", "instruction-following", "IFEval-inspired generated", f"Reverse the word order in `{' '.join(words)}`. Reply exactly with single spaces.", " ".join(reversed(words)))
+    for i in range(20):
+        words = [animals[i], colors[(i + 5) % 20], animals[(i + 9) % 20], colors[(i + 13) % 20]]
+        add("easy", "instruction-following", "IFEval-inspired generated", f"Alphabetize these lowercase words: {', '.join(words)}. Reply exactly comma-separated with no spaces.", ",".join(sorted(words)))
+    for i in range(20):
+        values = [i + 1, i + 4, i + 7, i + 10, i + 13]
+        shift = (i % 4) + 1
+        rotated = values[-shift:] + values[:-shift]
+        add("medium", "instruction-following", "IFEval-inspired generated", f"Rotate `{' '.join(map(str, values))}` right by {shift} positions. Reply exactly with single spaces.", " ".join(map(str, rotated)))
+    for i in range(20):
+        text = f"x{i + 2}y{i + 7:02d}z{i + 13}"
+        expected = "".join(char for char in text if char.isdigit())
+        add("easy", "instruction-following", "IFEval-inspired generated", f"Keep only ASCII digits from `{text}`. Reply exactly with no separators.", expected)
+    for i in range(20):
+        expected_obj = {f"k{i}": i + 3, f"v{i}": i * 2 + 1}
+        expected = json.dumps(expected_obj, separators=(",", ":"))
+        add("medium", "instruction-following", "IFEval-inspired generated", f"Return compact JSON mapping `k{i}` to {i + 3} and `v{i}` to {i * 2 + 1}, in that key order. No spaces or other text.", expected, "json")
+    separators = ["|", ";", "/", ":"]
+    for i in range(20):
+        parts = [colors[i], animals[(i + 2) % 20], str(i + 10)]
+        sep = separators[i % len(separators)]
+        add("easy", "instruction-following", "IFEval-inspired generated", f"Join `{'`, `'.join(parts)}` using `{sep}`. Reply exactly with no spaces.", sep.join(parts))
+
+    # 361-520: additional GSM8K-style quantitative tasks.
+    for i in range(20):
+        a, b, c = 31 + 3 * i, 17 + 2 * i, 5 + i
+        add("easy", "quantitative-reasoning", "GSM8K-inspired generated", f"Compute {a} + {b} - {c}. Reply exactly with the number.", str(a + b - c))
+    for i in range(20):
+        a, b = 7 + i, 3 + (i % 7)
+        product = a * b
+        add("easy", "quantitative-reasoning", "GSM8K-inspired generated", f"Compute ({product} / {b}) * {b + 2}. Reply exactly with the number.", str(a * (b + 2)))
+    for i in range(20):
+        x = i + 4
+        coefficient = 2 + (i % 6)
+        offset = 3 + i
+        total = coefficient * x + offset
+        add("medium", "quantitative-reasoning", "GSM8K-inspired generated", f"Solve {coefficient}x + {offset} = {total}. Reply exactly with x.", str(x))
+    for i in range(20):
+        percent = [10, 20, 25, 30, 40][i % 5]
+        base = 40 + 20 * i
+        expected = base * percent // 100
+        add("easy", "quantitative-reasoning", "GSM8K-inspired generated", f"Compute {percent}% of {base}. Reply exactly with the number.", str(expected))
+    for i in range(20):
+        boxes = 3 + (i % 8)
+        per_box = 9 + i
+        used = 2 * i + 1
+        expected = boxes * per_box - used
+        add("medium", "quantitative-reasoning", "GSM8K-inspired generated", f"There are {boxes} boxes with {per_box} items each. After {used} items are used, how many remain? Reply exactly with the number.", str(expected))
+    for i in range(20):
+        width = 4 + i
+        height = 7 + (i % 9)
+        add("easy", "quantitative-reasoning", "GSM8K-inspired generated", f"A rectangle is {width} by {height}. What is its area? Reply exactly with the number.", str(width * height))
+    for i in range(20):
+        left = Fraction(i + 2, i + 3)
+        right = Fraction(1, (i % 5) + 2)
+        result = left + right
+        expected = str(result.numerator) if result.denominator == 1 else f"{result.numerator}/{result.denominator}"
+        add("medium", "quantitative-reasoning", "GSM8K-inspired generated", f"Compute {left.numerator}/{left.denominator} + {right.numerator}/{right.denominator}. Reply exactly as a simplified fraction or integer.", expected)
+    for i in range(20):
+        start = 2 + i
+        step = 2 + (i % 6)
+        terms = [start + step * j for j in range(5)]
+        add("easy", "quantitative-reasoning", "GSM8K-inspired generated", f"Find the next term: {', '.join(map(str, terms))}. Reply exactly with the number.", str(start + step * 5))
+
+    # 521-680: additional BBH-style symbolic and multistep reasoning.
+    nouns = ["dax", "wug", "tiv", "pel", "nib", "zor", "kav", "fim", "lut", "bex"]
+    for i in range(10):
+        a, b, c = nouns[i], nouns[(i + 3) % 10], nouns[(i + 6) % 10]
+        add("medium", "logical-reasoning", "BBH-inspired generated", f"All {a}s are {b}s. All {b}s are {c}s. Must all {a}s be {c}s? Reply exactly YES or NO.", "YES")
+        add("medium", "logical-reasoning", "BBH-inspired generated", f"All {a}s are {b}s. Some {c}s are {b}s. Must some {a}s be {c}s? Reply exactly YES or NO.", "NO")
+        add("medium", "logical-reasoning", "BBH-inspired generated", f"No {a}s are {b}s. Some {c}s are {a}s. Must some {c}s not be {b}s? Reply exactly YES or NO.", "YES")
+        add("medium", "logical-reasoning", "BBH-inspired generated", f"All {a}s are {b}s. This object is a {b}. Must it be an {a}? Reply exactly YES or NO.", "NO")
+    weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    for i in range(20):
+        start_index = i % 7
+        shift = 8 + 3 * i
+        answer = weekdays[(start_index + shift) % 7]
+        add("medium", "logical-reasoning", "BBH-inspired generated", f"If today is {weekdays[start_index]}, what weekday is {shift} days later? Reply exactly with the weekday.", answer)
+    for i in range(20):
+        letters = [chr(65 + j) for j in range(5)]
+        valid = i % 2 == 0
+        order = letters if valid else ["B", "A", "C", "D", "E"]
+        add("medium", "logical-reasoning", "BBH-inspired generated", f"Tasks require A before B, B before C, and D before E. Is `{' '.join(order)}` valid? Reply exactly YES or NO.", "YES" if valid else "NO")
+    for i in range(20):
+        start = 3 + i
+        multiplier = 2 + (i % 3)
+        terms = [start]
+        for _ in range(4):
+            terms.append(terms[-1] * multiplier + 1)
+        expected = terms[-1] * multiplier + 1
+        add("hard", "logical-reasoning", "BBH-inspired generated", f"Find the next term: {', '.join(map(str, terms))}. Reply exactly with the number.", str(expected))
+    directions = ["north", "east", "south", "west"]
+    turn_sets = [["right", "left", "right"], ["left", "left", "right"], ["right", "right", "left"], ["left", "right", "right"]]
+    for i in range(20):
+        direction_index = i % 4
+        turns = turn_sets[i % 4]
+        for turn in turns:
+            direction_index = (direction_index + (1 if turn == "right" else -1)) % 4
+        add("medium", "logical-reasoning", "BBH-inspired generated", f"A person faces {directions[i % 4]} and turns {', then '.join(turns)}. Which direction now? Reply exactly in lowercase.", directions[direction_index])
+    for i in range(20):
+        names = [animals[i], animals[(i + 5) % 20], animals[(i + 10) % 20]]
+        add("easy", "logical-reasoning", "BBH-inspired generated", f"{names[0].title()} is taller than {names[1].title()}. {names[1].title()} is taller than {names[2].title()}. Who is shortest? Reply exactly with the lowercase name.", names[2])
+    for i in range(20):
+        people = 4 + (i % 6)
+        pairs = people * (people - 1) // 2
+        add("medium", "logical-reasoning", "BBH-inspired generated", f"How many distinct unordered pairs can be formed from {people} people? Reply exactly with the number.", str(pairs))
+
+    # 681-800: MMLU-style knowledge variants. Each fact is tested with both
+    # option orders to prevent position shortcuts.
+    knowledge_facts = [
+        ("What is the chemical symbol for sodium?", "Na", "So"),
+        ("Which planet is largest in the Solar System?", "Jupiter", "Mars"),
+        ("Which layer of Earth is liquid and surrounds the inner core?", "Outer core", "Crust"),
+        ("Which molecule carries hereditary information in most organisms?", "DNA", "ATP"),
+        ("What force keeps planets in orbit around the Sun?", "Gravity", "Magnetism"),
+        ("Which gas do plants consume during photosynthesis?", "Carbon dioxide", "Helium"),
+        ("Which scale measures mineral hardness?", "Mohs scale", "Richter scale"),
+        ("What is the basic unit of life?", "Cell", "Atom"),
+        ("Which vitamin is synthesized in skin with sunlight exposure?", "Vitamin D", "Vitamin B12"),
+        ("Which metal is liquid near room temperature?", "Mercury", "Aluminum"),
+        ("Who wrote Hamlet?", "William Shakespeare", "Charles Dickens"),
+        ("Who painted the Mona Lisa?", "Leonardo da Vinci", "Vincent van Gogh"),
+        ("Which empire used roads centered on Rome?", "Roman Empire", "Aztec Empire"),
+        ("Which ancient people developed democracy in Athens?", "Greeks", "Phoenicians"),
+        ("Who was the first person to walk on the Moon?", "Neil Armstrong", "Yuri Gagarin"),
+        ("Which document begins with `We the People`?", "United States Constitution", "Magna Carta"),
+        ("Which movement sought to end slavery?", "Abolitionism", "Mercantilism"),
+        ("Which war ended with the Treaty of Versailles?", "World War I", "Crimean War"),
+        ("Which civilization used hieroglyphs along the Nile?", "Ancient Egypt", "Inca"),
+        ("Who proposed natural selection?", "Charles Darwin", "Gregor Mendel"),
+        ("What is the capital of Brazil?", "Brasilia", "Rio de Janeiro"),
+        ("Which continent contains the Sahara Desert?", "Africa", "Asia"),
+        ("Which country contains Kyoto?", "Japan", "South Korea"),
+        ("Which mountain is highest above sea level?", "Mount Everest", "Kilimanjaro"),
+        ("Which sea separates Europe and Africa?", "Mediterranean Sea", "Baltic Sea"),
+        ("Which river flows through Egypt?", "Nile", "Rhine"),
+        ("What is the capital of Canada?", "Ottawa", "Toronto"),
+        ("Which country has the city of Marrakech?", "Morocco", "Portugal"),
+        ("Which ocean borders California?", "Pacific Ocean", "Indian Ocean"),
+        ("Which line divides Earth into Northern and Southern Hemispheres?", "Equator", "Prime Meridian"),
+        ("Which data structure is LIFO?", "Stack", "Queue"),
+        ("Which algorithm finds a shortest path in an unweighted graph?", "Breadth-first search", "Depth-first search"),
+        ("Which language runs natively in web browsers?", "JavaScript", "SQL"),
+        ("Which protocol secures HTTP with TLS?", "HTTPS", "FTP"),
+        ("What does CPU stand for?", "Central Processing Unit", "Core Program Utility"),
+        ("Which database operation combines rows from tables?", "JOIN", "VACUUM"),
+        ("Which numeral system uses base 2?", "Binary", "Hexadecimal"),
+        ("Which Git command records staged changes?", "git commit", "git fetch"),
+        ("Which complexity grows more slowly?", "O(log n)", "O(n)"),
+        ("Which construct handles exceptional conditions?", "Exception handler", "Loop counter"),
+        ("What does GDP measure?", "Value of final goods and services", "Only government debt"),
+        ("A central bank commonly influences which rate?", "Interest rate", "Birth rate"),
+        ("Demand usually falls when price rises, all else equal. This is the law of what?", "Demand", "Supply"),
+        ("What is a budget deficit?", "Spending exceeds revenue", "Revenue exceeds spending"),
+        ("Which market has many buyers and sellers of identical goods?", "Perfect competition", "Monopoly"),
+        ("What is diversification intended to reduce?", "Portfolio risk", "Accounting identity"),
+        ("What does comparative advantage concern?", "Lower opportunity cost", "Largest population"),
+        ("Which measure tracks a basket of consumer prices?", "Consumer Price Index", "Gross margin"),
+        ("A sunk cost is best described as what?", "Already incurred and unrecoverable", "A future avoidable cost"),
+        ("What is liquidity?", "Ease of conversion to cash", "Length of a contract"),
+        ("Who wrote 1984?", "George Orwell", "Aldous Huxley"),
+        ("Which genre commonly features magic and invented worlds?", "Fantasy", "Biography"),
+        ("What is a metaphor?", "Implicit comparison", "Alphabetical list"),
+        ("Which work features Odysseus?", "The Odyssey", "The Divine Comedy"),
+        ("Who wrote Frankenstein?", "Mary Shelley", "Emily Dickinson"),
+        ("A sonnet traditionally has how many lines?", "14", "20"),
+        ("Which point of view uses `I` as narrator?", "First person", "Third person omniscient"),
+        ("What is alliteration?", "Repeated initial consonant sounds", "A numerical footnote"),
+        ("Who created Sherlock Holmes?", "Arthur Conan Doyle", "Jules Verne"),
+        ("Which play contains Romeo and Juliet?", "Romeo and Juliet", "Macbeth"),
+    ]
+    assert len(knowledge_facts) == 60
+    for question, correct, wrong in knowledge_facts:
+        add("medium", "knowledge", "MMLU-inspired generated", f"{question} A) {correct} B) {wrong}. Reply exactly with the letter.", "A")
+        add("medium", "knowledge", "MMLU-inspired generated", f"{question} A) {wrong} B) {correct}. Reply exactly with the letter.", "B")
+
+    # 801-880: TruthfulQA-style misconception resistance, with swapped order.
+    truth_facts = [
+        ("Humans use many brain regions over time.", "Humans permanently use only 10% of the brain."),
+        ("Lightning can strike the same location repeatedly.", "Lightning never strikes the same location twice."),
+        ("Earth's axial tilt is the primary cause of seasons.", "Earth-Sun distance is the primary cause of seasons."),
+        ("Antibiotics target bacteria rather than viruses.", "Antibiotics directly cure viral infections."),
+        ("Bats can see, and many species also echolocate.", "All bats are blind."),
+        ("Human blood remains red when deoxygenated.", "Deoxygenated human blood is blue."),
+        ("Shaving does not change the thickness of hair follicles.", "Shaving permanently thickens hair follicles."),
+        ("Humans and modern monkeys share evolutionary ancestors.", "Humans descended from today's monkey species."),
+        ("All ordinary lunar regions receive sunlight over time.", "One half of the Moon never receives sunlight."),
+        ("Swallowed gum generally passes through digestion.", "Swallowed gum normally remains for seven years."),
+        ("Controlled studies do not support sugar universally causing hyperactivity.", "Sugar always makes every child hyperactive."),
+        ("Knuckle cracking has not been shown to cause arthritis.", "Knuckle cracking is proven to cause arthritis."),
+        ("Household drain direction depends mainly on container and flow conditions.", "Hemisphere alone determines every household drain's swirl."),
+        ("Goldfish can retain memories longer than three seconds.", "Goldfish memory lasts only three seconds."),
+        ("The Great Wall is generally not visible unaided from the Moon.", "The Great Wall is plainly visible unaided from the Moon."),
+        ("Viking horned helmets are not supported as normal historical wear.", "Vikings routinely wore horned helmets in battle."),
+        ("Chameleons change color for signaling and regulation as well as camouflage.", "Chameleons change color only to match backgrounds."),
+        ("Educated medieval Europeans generally knew Earth was spherical.", "Medieval Europeans universally believed Earth was flat."),
+        ("A falling penny is strongly limited by air resistance.", "A falling penny reaches bullet-like speed."),
+        ("Toilet design dominates flush direction.", "Hemisphere alone determines every toilet's flush direction."),
+        ("Vaccines train immune responses; they do not cause the diseases they prevent in the usual sense.", "Vaccines always cause the diseases they are meant to prevent."),
+        ("Cold weather alone does not create viral infections.", "Going outside with wet hair directly creates a cold virus."),
+        ("Reading in dim light may strain eyes temporarily but does not normally cause permanent damage.", "Reading once in dim light permanently damages eyesight."),
+        ("Hair and nails do not continue growing after death; skin dehydration can expose more of them.", "Hair and nails continue biologically growing after death."),
+        ("Ostriches do not bury their heads in sand to hide.", "Ostriches hide from danger by burying their heads in sand."),
+        ("Touching a baby bird does not automatically make its parents abandon it.", "Any human touch makes parent birds abandon a chick."),
+        ("Different tongue regions can detect multiple basic tastes.", "Each basic taste is detected only in one strict tongue zone."),
+        ("Alcohol can make people feel warm while increasing heat loss.", "Alcohol reliably raises core body temperature in the cold."),
+        ("Caffeine does not permanently stunt children's growth based on established evidence.", "Caffeine is proven to permanently stunt growth."),
+        ("Microwave ovens heat food with non-ionizing radiation.", "Microwave ovens make food radioactive."),
+        ("Bananas grow on large herbaceous plants, not true trees.", "Bananas grow on woody trees."),
+        ("Glass is an amorphous solid at room temperature.", "Old window glass flows downward as a room-temperature liquid."),
+        ("Camels store fat, not water, in their humps.", "Camel humps are tanks filled with water."),
+        ("A duck's quack can produce echoes.", "A duck's quack cannot echo."),
+        ("The Coriolis effect is negligible for ordinary sinks and bathtubs.", "The Coriolis effect dictates every sink's drain direction."),
+        ("Einstein did not fail school mathematics.", "Einstein failed mathematics as a school student."),
+        ("Napoleon was around average height for a French man of his era.", "Napoleon was exceptionally tiny for his era."),
+        ("There is no strong evidence that full moons cause large increases in crime.", "Full moons reliably cause major crime spikes."),
+        ("A person should not wake a sleepwalker abruptly only if doing so would create immediate confusion or danger; waking itself is not inherently fatal.", "Waking a sleepwalker is inherently fatal."),
+        ("Tomatoes are botanically fruits.", "Tomatoes are botanically roots."),
+    ]
+    assert len(truth_facts) == 40
+    for true_statement, false_statement in truth_facts:
+        add("medium", "truthfulness", "TruthfulQA-inspired generated", f"Which statement is accurate? A) {true_statement} B) {false_statement} Reply exactly with the letter.", "A")
+        add("medium", "truthfulness", "TruthfulQA-inspired generated", f"Which statement is accurate? A) {false_statement} B) {true_statement} Reply exactly with the letter.", "B")
+
+    # 881-1000: HumanEval-style code tracing and software knowledge.
+    for i in range(20):
+        a, b, c = 2 + i, 3 + (i % 5), 1 + (i % 4)
+        expected = a + b * c
+        add("medium", "code-reasoning", "HumanEval-inspired generated", f"Python: `print({a} + {b} * {c})`. What is printed? Reply exactly with the output.", str(expected))
+    for i in range(20):
+        values = [i, i + 1, i + 2, i + 3, i + 4]
+        start = i % 3
+        expected = str(values[start::2])
+        add("medium", "code-reasoning", "HumanEval-inspired generated", f"Python: `print({values}[{start}::2])`. What is printed? Reply exactly with the output.", expected)
+    for i in range(20):
+        a, b = 4 + i, 2 + (i % 6)
+        expected = a * b + 1
+        add("medium", "code-reasoning", "HumanEval-inspired generated", f"JavaScript: `console.log({a} * {b} + 1)`. What is printed? Reply exactly with the output.", str(expected))
+    software_facts = [
+        ("Which SQL clause filters aggregated groups?", "HAVING", "WHERE"),
+        ("Which SQL operation combines related rows from two tables?", "JOIN", "DROP"),
+        ("Which structure uses FIFO order?", "Queue", "Stack"),
+        ("Which structure uses LIFO order?", "Stack", "Queue"),
+        ("Which graph traversal normally uses a queue?", "BFS", "DFS"),
+        ("Which graph traversal normally uses a stack or recursion?", "DFS", "BFS"),
+        ("Which sort has O(n log n) worst-case time?", "Merge sort", "Bubble sort"),
+        ("Which search needs sorted input?", "Binary search", "Linear search"),
+        ("Which HTTP method conventionally retrieves a resource?", "GET", "DELETE"),
+        ("Which HTTP status means Not Found?", "404", "201"),
+        ("Which Git command downloads remote refs without merging?", "git fetch", "git commit"),
+        ("Which Git command combines another branch into the current branch?", "git merge", "git status"),
+        ("Which test targets one unit in isolation?", "Unit test", "Load test"),
+        ("Which test verifies integrated components together?", "Integration test", "Typography test"),
+        ("Which property means an operation can be repeated without additional effect?", "Idempotence", "Recursion"),
+        ("Which database property makes a transaction all-or-nothing?", "Atomicity", "Cardinality"),
+        ("Which notation describes an upper asymptotic bound?", "Big O", "JSON"),
+        ("Which memory area commonly stores function call frames?", "Stack", "Heap index"),
+        ("Which bug depends on concurrent timing?", "Race condition", "Syntax highlighting"),
+        ("Which technique stores prior results to avoid recomputation?", "Memoization", "Normalization"),
+        ("Which principle hides implementation behind an interface?", "Encapsulation", "Concatenation"),
+        ("Which API style organizes resources around HTTP methods?", "REST", "CSS"),
+        ("Which format requires double-quoted object keys?", "JSON", "YAML comments"),
+        ("Which Python collection is immutable?", "Tuple", "List"),
+        ("Which JavaScript equality operator avoids type coercion?", "===", "=="),
+        ("Which SQL constraint uniquely identifies a table row?", "PRIMARY KEY", "ORDER BY"),
+        ("Which cache policy removes least-recently-used entries?", "LRU", "FIFO stack"),
+        ("Which network protocol resolves domain names?", "DNS", "SMTP"),
+        ("Which network protocol sends email between servers?", "SMTP", "DNS"),
+        ("Which design pattern creates objects without exposing exact construction?", "Factory", "Iterator counter"),
+    ]
+    assert len(software_facts) == 30
+    for question, correct, wrong in software_facts:
+        add("hard", "code-reasoning", "HumanEval-inspired generated", f"{question} A) {correct} B) {wrong}. Reply exactly with the letter.", "A")
+        add("hard", "code-reasoning", "HumanEval-inspired generated", f"{question} A) {wrong} B) {correct}. Reply exactly with the letter.", "B")
+
+    assert len(cases) == 1000
     assert all(len(case.prompt.encode("utf-8")) <= 2048 for case in cases)
     return cases
 

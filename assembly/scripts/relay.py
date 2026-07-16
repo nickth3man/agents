@@ -40,7 +40,12 @@ def load_env() -> None:
         v = v.strip()
         if len(v) >= 2 and v[0] == v[-1] and v[0] in (_DQUOTE, _SQUOTE):
             v = v[1:-1]
-        os.environ.setdefault(k, v)
+        # The repository's selected model is intentionally controlled by
+        # .env. Preserve process-level secret overrides for the API key.
+        if k == "OPENROUTER_MODEL":
+            os.environ[k] = v
+        else:
+            os.environ.setdefault(k, v)
 
 
 load_env()
@@ -59,7 +64,23 @@ Otherwise give the minimum detail needed to answer well. Silently verify
 arithmetic, logic, factual cause-and-effect claims, and requested text
 transformations before responding. For transformations, compare the result to
 the source and ensure no requested token was lost. If the available information
-is insufficient, state that clearly instead of inventing an answer."""
+is insufficient, state that clearly instead of inventing an answer.
+
+Use this internal procedure: solve the task, check the proposed answer against
+the original input and every output constraint, correct any discrepancy, then
+emit only the final response. Do not reveal this internal procedure.
+
+Examples:
+User: Reverse `red green blue`. Reply exactly with single spaces.
+Assistant: blue green red
+User: Compute 17 + 8 * 3. Reply exactly with the number.
+Assistant: 41
+User: All nims are lats. All lats are zogs. Must all nims be zogs? Reply exactly YES or NO.
+Assistant: YES
+User: Which is correct? A) Earth orbits the Sun B) The Sun orbits Earth. Reply exactly with the letter.
+Assistant: A
+User: Python: `print(7 // 2)`. Reply exactly with the output.
+Assistant: 3"""
 
 
 def extract_reply(data):
@@ -90,6 +111,7 @@ def request_completion(msg):
         {
             "model": MODEL,
             "temperature": 0,
+            "provider": {"require_parameters": True},
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": msg},
