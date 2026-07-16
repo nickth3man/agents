@@ -24,7 +24,7 @@ param(
     # Modules to link (grown per milestone). Assembled set is always src/*.asm.
     [string[]]$LinkModules = @('state','decimal','text','log','http_read','http_parse','http_write','router','assets','engine_gateway','net_init','net_io','start'),
     # DLLs to hand to GoLink for import resolution (grown per milestone).
-    [string[]]$LinkDlls    = @('kernel32.dll','ws2_32.dll'),
+    [string[]]$LinkDlls    = @('kernel32.dll','ws2_32.dll','winhttp.dll'),
     [string]$OutName = 'chat-agent',     # M1 was abi-hello; server artifact is chat-agent
     [string]$Entry   = 'start'
 )

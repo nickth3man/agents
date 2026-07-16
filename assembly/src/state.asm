@@ -74,19 +74,21 @@ resp_ct_ptr:     resq 1
 global resp_ct_len
 resp_ct_len:     resq 1
 
-; --- gateway engine state (PLAN §2.10, Milestone 8) ------------------------
-global gw_sock
-gw_sock:         resq 1               ; outbound socket to the relay
+; --- native OpenRouter gateway state --------------------------------------
 global gw_used
-gw_used:         resq 1               ; bytes accumulated in gateway_resp
-global gw_header_end
-gw_header_end:   resq 1               ; offset of relay reply body
+gw_used:         resq 1               ; bytes accumulated from WinHTTP
 global gateway_req
 gateway_guard_lo: resq 1
-gateway_req:     resb CAP_RESP_HDR    ; 512-byte gateway request workspace
+gateway_req:     resb CAP_GATEWAY_REQ ; request JSON, then decoded model reply
 global gateway_resp
-gateway_resp:    resb CAP_GATEWAY_RESP ; 16 KiB bounded LLM reply
+gateway_resp:    resb CAP_GATEWAY_RESP ; raw OpenRouter response JSON
 gateway_guard_hi: resq 1
+global gateway_api_key
+gateway_api_key: resb CAP_API_KEY
+global gateway_model
+gateway_model:   resb CAP_MODEL
+global gateway_headers_w
+gateway_headers_w: resw CAP_AUTH_WCHARS
 
 section .data
 global excl_enable

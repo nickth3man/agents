@@ -1,5 +1,5 @@
 #Requires -Version 5.1
-<# stop.ps1 - stop any asm-chat relay (8081) and server (8080). #>
+<# stop.ps1 - stop the native asm-chat server (and any obsolete relay). #>
 $killed = 0
 foreach ($port in 8080, 8081) {
     Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue | ForEach-Object {

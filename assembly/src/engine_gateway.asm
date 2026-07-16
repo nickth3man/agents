@@ -1,21 +1,21 @@
 ; ===========================================================================
-; src/engine_gateway.asm - local LLM relay client (PLAN §2.10, Milestone 8)
+; engine_gateway.asm - native OpenRouter HTTPS chat-completions client.
+; TLS, authentication, JSON encoding/decoding, and response extraction all
+; execute in this Assembly module through the documented Windows WinHTTP API.
 ; ===========================================================================
 %include "win64.inc"
-%include "winsock.inc"
+%include "winapi.inc"
+%include "winhttp.inc"
 %include "http.inc"
 %include "config.inc"
 
-extern copy_bytes
-extern u32_to_dec
 extern mem_find
-extern bytes_eq
-extern send_all
 extern gateway_req
 extern gateway_resp
-extern gw_sock
+extern gateway_api_key
+extern gateway_model
+extern gateway_headers_w
 extern gw_used
-extern gw_header_end
 extern resp_body_ptr
 extern resp_body_len
 extern resp_ct_ptr
@@ -24,168 +24,628 @@ extern resp_ct_len
 default rel
 
 section .data
-gw_req_pfx:
-    db "POST /generate HTTP/1.1",13,10
-    db "Host: 127.0.0.1",13,10
-    db "Content-Type: text/plain",13,10
-    db "Content-Length: "
-GW_REQ_PFX_LEN equ $-gw_req_pfx
-gw_req_sfx: db 13,10,"Connection: close",13,10,13,10
-GW_REQ_SFX_LEN equ $-gw_req_sfx
-gw_crlf:    db 13,10,13,10
-gw_ok_status: db "HTTP/1.1 200"
-GW_OK_STATUS_LEN equ $-gw_ok_status
-gw_ct:      db "text/plain; charset=utf-8"
-GW_CT_LEN   equ $-gw_ct
-gw_timeout_ms: dd 60000              ; long recv timeout for model latency
-relay_addr:
-    dw  AF_INET
-    dw  PORT_8081_NET                ; htons(8081)
-    dd  IP_127_0_0_1_NET            ; 127.0.0.1
-    dq  0
+env_api_key: db "OPENROUTER_API_KEY",0
+env_model:   db "OPENROUTER_MODEL",0
+
+; WinHTTP requires UTF-16 strings.
+ua_w:   dw 'a','s','m','-','c','h','a','t','/','1','.','0',0
+host_w: dw 'o','p','e','n','r','o','u','t','e','r','.','a','i',0
+post_w: dw 'P','O','S','T',0
+path_w: dw '/','a','p','i','/','v','1','/','c','h','a','t','/','c','o','m','p','l','e','t','i','o','n','s',0
+
+auth_prefix: db "Authorization: Bearer "
+AUTH_PREFIX_LEN equ $-auth_prefix
+auth_suffix: db 13,10,"Content-Type: application/json",13,10
+AUTH_SUFFIX_LEN equ $-auth_suffix
+
+json_a: db '{"model":"'
+JSON_A_LEN equ $-json_a
+json_b: db '","temperature":0,"provider":{"require_parameters":true},"messages":[{"role":"system","content":"'
+JSON_B_LEN equ $-json_b
+json_c: db '"},{"role":"user","content":"'
+JSON_C_LEN equ $-json_c
+json_d: db '"}]}'
+JSON_D_LEN equ $-json_d
+
+system_prompt:
+    db "You are a precise, capable assistant. Answer correctly and directly. "
+    db "Treat every explicit output constraint from the user as mandatory. "
+    db "When the user asks for an exact form, only the answer, or no other text, emit only that content: no preamble, explanation, label, or Markdown fence. "
+    db "Otherwise give the minimum detail needed to answer well. Silently solve and verify arithmetic, logic, facts, code, and text transformations before responding. "
+    db "Check the proposed answer against the original input and every output constraint, correct discrepancies, then emit only the final response. Do not reveal this internal procedure.",10
+    db "Examples:",10
+    db "User: Reverse `red green blue`. Reply exactly with single spaces.",10
+    db "Assistant: blue green red",10
+    db "User: Compute 17 + 8 * 3. Reply exactly with the number.",10
+    db "Assistant: 41",10
+    db "User: All nims are lats. All lats are zogs. Must all nims be zogs? Reply exactly YES or NO.",10
+    db "Assistant: YES",10
+    db "User: Which is correct? A) Earth orbits the Sun B) The Sun orbits Earth. Reply exactly with the letter.",10
+    db "Assistant: A",10
+    db "User: Python: `print(7 // 2)`. Reply exactly with the output.",10
+    db "Assistant: 3"
+SYSTEM_PROMPT_LEN equ $-system_prompt
+
+content_key: db '"content":'
+CONTENT_KEY_LEN equ $-content_key
+gw_ct: db "text/plain; charset=utf-8"
+GW_CT_LEN equ $-gw_ct
 
 section .text
 
-; ---------------------------------------------------------------------------
-; gateway_generate - send the user message to the relay, read back the reply.
-; ---------------------------------------------------------------------------
-; Inputs:  RCX = message ptr (in recv_buf), RDX = message length.
-; Outputs: RAX = 0 on success (resp_* globals set to the model reply),
-;          or HTTP_502 on any failure (relay down / timeout / malformed).
-; Clobbers: volatile + saved rbx,r12,r13.
-; Alignment: 4 pushes (rbp,rbx,r12,r13) entry≡8 -> ≡8; sub 40 -> ≡0. OK.
-; Max read: CAP_GATEWAY_RESP (16 KiB). Max write: bounded relay reply.
-; ---------------------------------------------------------------------------
+; append_raw - append counted bytes to the request buffer.
+; Inputs: RDI=cursor, RSI=source, RCX=count, R14=end. Output: RDI advanced,
+; CF set on overflow. This internal helper intentionally advances RSI/RCX.
+append_raw:
+    mov     rax, rdi
+    add     rax, rcx
+    jc      .overflow
+    cmp     rax, r14
+    ja      .overflow
+    rep movsb
+    clc
+    ret
+.overflow:
+    stc
+    ret
+
+; append_json - append a UTF-8 string escaped as JSON string content.
+; Handles all JSON control escapes; input UTF-8 bytes >= 0x20 pass through.
+; Inputs: RDI=cursor, RSI=source, RCX=count, R14=end. Output as append_raw.
+append_json:
+.next:
+    test    rcx, rcx
+    jz      .ok
+    movzx   eax, byte [rsi]
+    inc     rsi
+    dec     rcx
+    cmp     al, '"'
+    je      .quote
+    cmp     al, '\'
+    je      .slash
+    cmp     al, 8
+    je      .backspace
+    cmp     al, 9
+    je      .tab
+    cmp     al, 10
+    je      .newline
+    cmp     al, 12
+    je      .formfeed
+    cmp     al, 13
+    je      .return
+    cmp     al, 0x20
+    jb      .bad_control
+    cmp     rdi, r14
+    jae     .overflow
+    mov     [rdi], al
+    inc     rdi
+    jmp     .next
+.quote:     mov dl, '"'
+    jmp .escaped
+.slash:     mov dl, '\'
+    jmp .escaped
+.backspace: mov dl, 'b'
+    jmp .escaped
+.tab:       mov dl, 't'
+    jmp .escaped
+.newline:   mov dl, 'n'
+    jmp .escaped
+.formfeed:  mov dl, 'f'
+    jmp .escaped
+.return:    mov dl, 'r'
+.escaped:
+    mov     rax, rdi
+    add     rax, 2
+    cmp     rax, r14
+    ja      .overflow
+    mov     byte [rdi], '\'
+    mov     [rdi+1], dl
+    add     rdi, 2
+    jmp     .next
+.bad_control:
+    ; Encode uncommon C0 controls as \u00XX.
+    mov     rax, rdi
+    add     rax, 6
+    cmp     rax, r14
+    ja      .overflow
+    mov     byte [rdi], '\'
+    mov     byte [rdi+1], 'u'
+    mov     byte [rdi+2], '0'
+    mov     byte [rdi+3], '0'
+    mov     edx, eax
+    and     edx, 15
+    shr     eax, 4
+    and     eax, 15
+    cmp     al, 9
+    jbe     .hi_digit
+    add     al, 'a'-10
+    jmp     .hi_store
+.hi_digit:  add al, '0'
+.hi_store:  mov [rdi+4], al
+    mov     eax, edx
+    cmp     al, 9
+    jbe     .lo_digit
+    add     al, 'a'-10
+    jmp     .lo_store
+.lo_digit:  add al, '0'
+.lo_store:  mov [rdi+5], al
+    add     rdi, 6
+    jmp     .next
+.ok:
+    clc
+    ret
+.overflow:
+    stc
+    ret
+
+; append_wide - widen counted ASCII bytes into a UTF-16 header buffer.
+; Inputs: RDI=wide cursor, RSI=ASCII, RCX=count, R14=wide-buffer byte end.
+append_wide:
+.loop:
+    test    rcx, rcx
+    jz      .ok
+    mov     rax, rdi
+    add     rax, 2
+    cmp     rax, r14
+    ja      .overflow
+    movzx   eax, byte [rsi]
+    mov     [rdi], ax
+    inc     rsi
+    add     rdi, 2
+    dec     rcx
+    jmp     .loop
+.ok: clc
+    ret
+.overflow: stc
+    ret
+
+; hex_nibble - convert one ASCII hex digit. CF set if invalid.
+hex_nibble:
+    cmp     al, '0'
+    jb      .bad
+    cmp     al, '9'
+    jbe     .digit
+    or      al, 0x20
+    cmp     al, 'a'
+    jb      .bad
+    cmp     al, 'f'
+    ja      .bad
+    sub     al, 'a'-10
+    clc
+    ret
+.digit:
+    sub     al, '0'
+    clc
+    ret
+.bad:
+    stc
+    ret
+
+; decode_content - extract and JSON-decode choices[0].message.content.
+; Input: gateway_resp/gw_used. Output: RAX=0 and resp globals, else 1.
+decode_content:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 32                 ; six saved regs leave RSP call-aligned
+    lea     rcx, [rel gateway_resp]
+    mov     rdx, [rel gw_used]
+    lea     r8,  [rel content_key]
+    mov     r9,  CONTENT_KEY_LEN
+    call    mem_find
+    test    rax, rax
+    js      .fail
+    lea     rsi, [rel gateway_resp]
+    add     rsi, rax
+    add     rsi, CONTENT_KEY_LEN
+    lea     r14, [rel gateway_resp]
+    add     r14, [rel gw_used]
+.skip_ws:
+    cmp     rsi, r14
+    jae     .fail
+    mov     al, [rsi]
+    cmp     al, ' '
+    je      .ws
+    cmp     al, 9
+    je      .ws
+    cmp     al, 10
+    je      .ws
+    cmp     al, 13
+    jne     .expect_quote
+.ws: inc rsi
+    jmp .skip_ws
+.expect_quote:
+    cmp     byte [rsi], '"'
+    jne     .fail
+    inc     rsi
+    lea     rdi, [rel gateway_req]
+    mov     r12, rdi                 ; decoded start
+    lea     r13, [rel gateway_req]
+    add     r13, CAP_GATEWAY_REQ
+.decode:
+    cmp     rsi, r14
+    jae     .fail
+    movzx   eax, byte [rsi]
+    inc     rsi
+    cmp     al, '"'
+    je      .done
+    cmp     al, '\'
+    jne     .emit_byte
+    cmp     rsi, r14
+    jae     .fail
+    movzx   eax, byte [rsi]
+    inc     rsi
+    cmp     al, '"'
+    je      .emit_byte
+    cmp     al, '\'
+    je      .emit_byte
+    cmp     al, '/'
+    je      .emit_byte
+    cmp     al, 'b'
+    je      .esc_b
+    cmp     al, 'f'
+    je      .esc_f
+    cmp     al, 'n'
+    je      .esc_n
+    cmp     al, 'r'
+    je      .esc_r
+    cmp     al, 't'
+    je      .esc_t
+    cmp     al, 'u'
+    jne     .fail
+    ; Decode one BMP \uXXXX value to UTF-8 (surrogates become '?').
+    mov     ecx, 4
+    xor     ebx, ebx
+.hex_loop:
+    cmp     rsi, r14
+    jae     .fail
+    mov     al, [rsi]
+    inc     rsi
+    call    hex_nibble
+    jc      .fail
+    shl     ebx, 4
+    movzx   eax, al
+    or      ebx, eax
+    dec     ecx
+    jnz     .hex_loop
+    cmp     ebx, 0xD800
+    jb      .utf8
+    cmp     ebx, 0xDFFF
+    ja      .utf8
+    mov     al, '?'
+    jmp     .emit_byte
+.utf8:
+    cmp     ebx, 0x7F
+    ja      .utf8_two
+    mov     eax, ebx
+    jmp     .emit_byte
+.utf8_two:
+    cmp     ebx, 0x7FF
+    ja      .utf8_three
+    mov     rax, rdi
+    add     rax, 2
+    cmp     rax, r13
+    ja      .fail
+    mov     eax, ebx
+    shr     eax, 6
+    or      al, 0xC0
+    mov     [rdi], al
+    mov     eax, ebx
+    and     al, 0x3F
+    or      al, 0x80
+    mov     [rdi+1], al
+    add     rdi, 2
+    jmp     .decode
+.utf8_three:
+    mov     rax, rdi
+    add     rax, 3
+    cmp     rax, r13
+    ja      .fail
+    mov     eax, ebx
+    shr     eax, 12
+    or      al, 0xE0
+    mov     [rdi], al
+    mov     eax, ebx
+    shr     eax, 6
+    and     al, 0x3F
+    or      al, 0x80
+    mov     [rdi+1], al
+    mov     eax, ebx
+    and     al, 0x3F
+    or      al, 0x80
+    mov     [rdi+2], al
+    add     rdi, 3
+    jmp     .decode
+.esc_b: mov al, 8
+    jmp .emit_byte
+.esc_f: mov al, 12
+    jmp .emit_byte
+.esc_n: mov al, 10
+    jmp .emit_byte
+.esc_r: mov al, 13
+    jmp .emit_byte
+.esc_t: mov al, 9
+.emit_byte:
+    cmp     rdi, r13
+    jae     .fail
+    mov     [rdi], al
+    inc     rdi
+    jmp     .decode
+.done:
+    ; Match the former relay's strip(): trim outer ASCII whitespace only.
+.trim_left:
+    cmp     r12, rdi
+    jae     .fail
+    mov     al, [r12]
+    cmp     al, ' '
+    je      .left_one
+    cmp     al, 9
+    je      .left_one
+    cmp     al, 10
+    je      .left_one
+    cmp     al, 13
+    jne     .trim_right
+.left_one: inc r12
+    jmp .trim_left
+.trim_right:
+    cmp     rdi, r12
+    jbe     .fail
+    mov     al, [rdi-1]
+    cmp     al, ' '
+    je      .right_one
+    cmp     al, 9
+    je      .right_one
+    cmp     al, 10
+    je      .right_one
+    cmp     al, 13
+    jne     .success
+.right_one: dec rdi
+    jmp .trim_right
+.success:
+    mov     [rel resp_body_ptr], r12
+    mov     rax, rdi
+    sub     rax, r12
+    mov     [rel resp_body_len], rax
+    lea     rax, [rel gw_ct]
+    mov     [rel resp_ct_ptr], rax
+    mov     qword [rel resp_ct_len], GW_CT_LEN
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    add     rsp, 32
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; gateway_generate - call OpenRouter and expose the decoded model answer.
+; Inputs: RCX=user UTF-8 pointer, RDX=length.
+; Output: RAX=0 success, HTTP_502 failure. No non-LLM answer path exists.
 global gateway_generate
 gateway_generate:
     push    rbp
     mov     rbp, rsp
-    push    rbx                     ; message ptr
-    push    r12                     ; message len
-    push    r13                     ; request-header cursor
-    sub     rsp, 40                 ; shadow(32)+8; aligned
-    mov     rbx, rcx
-    mov     r12, rdx
-    mov     qword [gw_used], 0
-    mov     qword [gw_header_end], 0
-    ; --- outbound socket ---
-    mov     rcx, AF_INET
-    mov     rdx, SOCK_STREAM
-    mov     r8,  IPPROTO_TCP
-    call    socket
-    cmp     rax, INVALID_SOCKET
-    je      .fail502
-    mov     [gw_sock], rax
-    ; --- long recv timeout (model latency) ---
-    mov     rcx, rax
-    mov     edx, SOL_SOCKET
-    mov     r8d, SO_RCVTIMEO
-    lea     r9,  [gw_timeout_ms]
-    mov     dword [rsp+0x20], 4
-    call    setsockopt
-    ; --- connect to relay 127.0.0.1:8081 ---
-    mov     rcx, [gw_sock]
-    lea     rdx, [relay_addr]
-    mov     r8,  SOCKADDR_IN_SIZE
-    call    connect
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 136                ; seven saved regs require +8 alignment
+    mov     [rsp+96], rcx           ; user pointer
+    mov     [rsp+104], rdx          ; user length
+    xor     ebx, ebx                ; session handle
+    xor     r12d, r12d              ; connection handle
+    xor     r15d, r15d              ; request handle
+
+    ; Configuration is inherited from run.ps1, which reads the shared .env.
+    lea     rcx, [rel env_api_key]
+    lea     rdx, [rel gateway_api_key]
+    mov     r8d, CAP_API_KEY
+    call    GetEnvironmentVariableA
     test    eax, eax
-    jnz     .fail502_close
-    ; --- build request headers into gateway_req ---
-    lea     r13, [rel gateway_req]
-    mov     rcx, r13
-    lea     r8,  [gw_req_pfx]
-    mov     rdx, GW_REQ_PFX_LEN
-    call    copy_bytes
-    add     r13, GW_REQ_PFX_LEN
-    ; Content-Length decimal (message length)
-    mov     ecx, r12d
-    mov     rdx, r13
-    mov     r8,  8
-    call    u32_to_dec
-    add     r13, rax
-    ; suffix (Connection: close + blank line)
-    mov     rcx, r13
-    lea     r8,  [gw_req_sfx]
-    mov     rdx, GW_REQ_SFX_LEN
-    call    copy_bytes
-    add     r13, GW_REQ_SFX_LEN
-    ; --- send headers ---
-    lea     r11, [rel gateway_req]
-    mov     r8,  r13
-    sub     r8,  r11                ; header length
-    mov     rcx, [gw_sock]
-    mov     rdx, r11
-    call    send_all
+    jz      .fail
+    cmp     eax, CAP_API_KEY
+    jae     .fail
+    mov     [rsp+112], rax          ; key length
+    lea     rcx, [rel env_model]
+    lea     rdx, [rel gateway_model]
+    mov     r8d, CAP_MODEL
+    call    GetEnvironmentVariableA
     test    eax, eax
-    jnz     .fail502_close
-    ; --- send message body ---
-    mov     rcx, [gw_sock]
-    mov     rdx, rbx
-    mov     r8,  r12
-    call    send_all
-    test    eax, eax
-    jnz     .fail502_close
-    ; --- read relay reply until it closes (bounded) ---
-.gw_read:
-    mov     rax, CAP_GATEWAY_RESP
-    sub     rax, [gw_used]
-    jle     .gw_read_done           ; buffer full
-    mov     rcx, [gw_sock]
-    lea     rdx, [gateway_resp]
-    add     rdx, [gw_used]
-    mov     r8,  rax
+    jz      .fail
+    cmp     eax, CAP_MODEL
+    jae     .fail
+    mov     [rsp+120], rax          ; model length
+
+    ; Construct the OpenRouter request body with strict JSON escaping.
+    lea     rdi, [rel gateway_req]
+    lea     r14, [rel gateway_req]
+    add     r14, CAP_GATEWAY_REQ
+    lea     rsi, [rel json_a]
+    mov     ecx, JSON_A_LEN
+    call    append_raw
+    jc      .fail
+    lea     rsi, [rel gateway_model]
+    mov     rcx, [rsp+120]
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel json_b]
+    mov     ecx, JSON_B_LEN
+    call    append_raw
+    jc      .fail
+    lea     rsi, [rel system_prompt]
+    mov     ecx, SYSTEM_PROMPT_LEN
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel json_c]
+    mov     ecx, JSON_C_LEN
+    call    append_raw
+    jc      .fail
+    mov     rsi, [rsp+96]
+    mov     rcx, [rsp+104]
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel json_d]
+    mov     ecx, JSON_D_LEN
+    call    append_raw
+    jc      .fail
+    lea     rax, [rel gateway_req]
+    sub     rdi, rax
+    mov     r13, rdi                ; request body byte length
+
+    ; Build UTF-16 Authorization and Content-Type headers.
+    lea     rdi, [rel gateway_headers_w]
+    lea     r14, [rel gateway_headers_w]
+    add     r14, CAP_AUTH_WCHARS*2
+    lea     rsi, [rel auth_prefix]
+    mov     ecx, AUTH_PREFIX_LEN
+    call    append_wide
+    jc      .fail
+    lea     rsi, [rel gateway_api_key]
+    mov     rcx, [rsp+112]
+    call    append_wide
+    jc      .fail
+    lea     rsi, [rel auth_suffix]
+    mov     ecx, AUTH_SUFFIX_LEN
+    call    append_wide
+    jc      .fail
+    lea     rax, [rel gateway_headers_w]
+    sub     rdi, rax
+    shr     rdi, 1
+    mov     [rsp+88], rdi           ; header character count
+
+    lea     rcx, [rel ua_w]
+    mov     edx, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
+    xor     r8d, r8d
     xor     r9d, r9d
-    call    recv
-    mov     r11d, eax
-    test    r11d, r11d
-    js      .fail502_close          ; recv error (timeout / reset)
-    je      .gw_read_done           ; relay closed -> response complete
-    add     [gw_used], r11
-    jmp     .gw_read
-.gw_read_done:
-    ; Reject relay HTTP errors instead of forwarding their text as a 200 reply.
-    cmp     qword [gw_used], GW_OK_STATUS_LEN
-    jb      .fail502_close
-    lea     rcx, [rel gateway_resp]
-    mov     rdx, GW_OK_STATUS_LEN
-    lea     r8,  [gw_ok_status]
-    mov     r9,  GW_OK_STATUS_LEN
-    call    bytes_eq
-    test    eax, eax
-    jz      .fail502_close
-    ; locate header/body split
-    lea     rcx, [rel gateway_resp]
-    mov     rdx, [gw_used]
-    lea     r8,  [gw_crlf]
-    mov     r9,  4
-    call    mem_find
+    mov     qword [rsp+32], 0
+    call    WinHttpOpen
     test    rax, rax
-    js      .fail502_close          ; no CRLFCRLF -> malformed
-    add     rax, 4
-    mov     [gw_header_end], rax
-    ; resp_body = gateway_resp + header_end ; len = gw_used - header_end
-    lea     r11, [rel gateway_resp]
-    add     r11, [gw_header_end]
-    mov     [resp_body_ptr], r11
-    mov     rax, [gw_used]
-    sub     rax, [gw_header_end]
-    mov     [resp_body_len], rax
-    lea     r11, [gw_ct]
-    mov     [resp_ct_ptr], r11
-    mov     qword [resp_ct_len], GW_CT_LEN
-    mov     rcx, [gw_sock]
-    call    closesocket
-    xor     eax, eax                ; success
-    jmp     .out
-.fail502_close:
-    mov     rcx, [gw_sock]
-    call    closesocket
-.fail502:
-    mov     eax, HTTP_502
+    jz      .fail
+    mov     rbx, rax
+    mov     rcx, rbx
+    mov     edx, 10000
+    mov     r8d, 10000
+    mov     r9d, 60000
+    mov     qword [rsp+32], 60000
+    call    WinHttpSetTimeouts
+    test    eax, eax
+    jz      .fail
+    mov     rcx, rbx
+    lea     rdx, [rel host_w]
+    mov     r8d, 443
+    xor     r9d, r9d
+    call    WinHttpConnect
+    test    rax, rax
+    jz      .fail
+    mov     r12, rax
+    mov     rcx, r12
+    lea     rdx, [rel post_w]
+    lea     r8,  [rel path_w]
+    xor     r9d, r9d
+    mov     qword [rsp+32], 0
+    mov     qword [rsp+40], 0
+    mov     qword [rsp+48], WINHTTP_FLAG_SECURE
+    call    WinHttpOpenRequest
+    test    rax, rax
+    jz      .fail
+    mov     r15, rax
+    mov     rcx, r15
+    lea     rdx, [rel gateway_headers_w]
+    mov     r8d, [rsp+88]
+    lea     r9,  [rel gateway_req]
+    mov     [rsp+32], r13
+    mov     [rsp+40], r13
+    mov     qword [rsp+48], 0
+    call    WinHttpSendRequest
+    test    eax, eax
+    jz      .fail
+    mov     rcx, r15
+    xor     edx, edx
+    call    WinHttpReceiveResponse
+    test    eax, eax
+    jz      .fail
+
+    ; Require a numeric HTTP 200 before accepting response content.
+    mov     dword [rsp+80], 4        ; status buffer size
+    mov     dword [rsp+84], 0        ; status value
+    mov     rcx, r15
+    mov     edx, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER
+    xor     r8d, r8d
+    lea     r9, [rsp+84]
+    lea     rax, [rsp+80]
+    mov     [rsp+32], rax
+    mov     qword [rsp+40], 0
+    call    WinHttpQueryHeaders
+    test    eax, eax
+    jz      .fail
+    cmp     dword [rsp+84], 200
+    jne     .fail
+
+    mov     qword [rel gw_used], 0
+.read:
+    mov     rax, CAP_GATEWAY_RESP
+    sub     rax, [rel gw_used]
+    jz      .fail
+    mov     rcx, r15
+    lea     rdx, [rel gateway_resp]
+    add     rdx, [rel gw_used]
+    mov     r8d, eax
+    lea     r9, [rsp+76]             ; DWORD bytes read
+    mov     dword [rsp+76], 0
+    call    WinHttpReadData
+    test    eax, eax
+    jz      .fail
+    mov     eax, [rsp+76]
+    test    eax, eax
+    jz      .read_done
+    add     [rel gw_used], rax
+    jmp     .read
+.read_done:
+    call    decode_content
+    test    eax, eax
+    jnz     .fail
+    xor     r13d, r13d               ; final status success
+    jmp     .cleanup
+.fail:
+    mov     r13d, HTTP_502
+.cleanup:
+    test    r15, r15
+    jz      .close_connect
+    mov     rcx, r15
+    call    WinHttpCloseHandle
+.close_connect:
+    test    r12, r12
+    jz      .close_session
+    mov     rcx, r12
+    call    WinHttpCloseHandle
+.close_session:
+    test    rbx, rbx
+    jz      .out
+    mov     rcx, rbx
+    call    WinHttpCloseHandle
 .out:
-    add     rsp, 40
+    mov     eax, r13d
+    add     rsp, 136
+    pop     r15
+    pop     r14
     pop     r13
     pop     r12
+    pop     rdi
+    pop     rsi
     pop     rbx
     pop     rbp
     ret

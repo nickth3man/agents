@@ -16,7 +16,7 @@ from intelligence_cases import CASES, Case
 
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:8080/chat"
-DEFAULT_RELAY_HEALTH = "http://127.0.0.1:8081/"
+DEFAULT_AGENT_HEALTH = "http://127.0.0.1:8080/health"
 TIMEOUT_SECONDS = 75
 
 
@@ -75,7 +75,7 @@ def parse_ids(value: str | None) -> set[int] | None:
     return selected
 
 
-def read_relay_health(url: str) -> str:
+def read_agent_health(url: str) -> str:
     try:
         with urllib.request.urlopen(url, timeout=5) as response:
             return response.read().decode("utf-8", "replace").strip()
@@ -86,7 +86,7 @@ def read_relay_health(url: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
-    parser.add_argument("--relay-health", default=DEFAULT_RELAY_HEALTH)
+    parser.add_argument("--agent-health", default=DEFAULT_AGENT_HEALTH)
     parser.add_argument("--ids", help="Comma-separated IDs or ranges, e.g. 1-20,44")
     parser.add_argument("--label", default="run")
     args = parser.parse_args()
@@ -97,8 +97,8 @@ def main() -> int:
         parser.error("no cases selected")
 
     run_started = datetime.now(timezone.utc)
-    relay_health = read_relay_health(args.relay_health)
-    print(f"Relay: {relay_health}", flush=True)
+    agent_health = read_agent_health(args.agent_health)
+    print(f"Agent: {agent_health}", flush=True)
     results = []
     for index, case in enumerate(selected, 1):
         status, response, latency, error = query(args.endpoint, case.prompt)
@@ -159,7 +159,7 @@ def main() -> int:
         "started_at": run_started.isoformat(),
         "finished_at": finished.isoformat(),
         "endpoint": args.endpoint,
-        "relay_health": relay_health,
+        "agent_health": agent_health,
         "summary": summary,
         "results": results,
     }
@@ -179,7 +179,7 @@ def main() -> int:
         f"- Started: {payload['started_at']}",
         f"- Finished: {payload['finished_at']}",
         f"- Score: **{passed_count}/{len(results)}**",
-        f"- Relay: `{relay_health}`",
+        f"- Agent: `{agent_health}`",
         f"- Mean latency: {summary['latency_mean_seconds']:.3f}s",
         "",
     ]

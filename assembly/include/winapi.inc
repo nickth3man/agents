@@ -17,6 +17,7 @@
 extern GetStdHandle       ; DWORD  nStdHandle (rcx)            -> RAX = handle
 extern WriteFile          ; HANDLE,ptr,DWORD,ptr DWORD,ptr OVERLAPPED
 extern ExitProcess        ; UINT uExitCode (rcx)               -> does not return
+extern GetEnvironmentVariableA ; LPCSTR name, LPSTR buffer, DWORD size
 
 ; --- Standard handle pseudo-values (passed to GetStdHandle) ----------------
 %define STD_INPUT_HANDLE  -10

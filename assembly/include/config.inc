@@ -17,7 +17,11 @@
 %define CAP_CHAT_BODY    2048          ; max /chat body
 %define CAP_RESP_HDR     512           ; response-header workspace
 %define CAP_LOG_LINE     512           ; one structured log line
-%define CAP_GATEWAY_RESP 16384         ; optional LLM gateway response
+%define CAP_GATEWAY_REQ  16384         ; OpenRouter JSON request / decoded reply
+%define CAP_GATEWAY_RESP 65536         ; bounded OpenRouter JSON response
+%define CAP_API_KEY      1024          ; OpenRouter credential from environment
+%define CAP_MODEL        256           ; model identifier from environment
+%define CAP_AUTH_WCHARS  1024          ; UTF-16 request headers
 
 ; Debug guards placed immediately around critical static buffers.
 %define CANARY_VALUE     0xA55AA55AA55AA55A
