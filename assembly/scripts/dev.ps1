@@ -17,6 +17,28 @@ param(
 $ErrorActionPreference = 'Stop'
 $root   = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+
+# Load shared repo-root .env so the spawned exe inherits OpenRouter credentials.
+# Variables already set in the shell take precedence over .env values.
+$envFile = Join-Path (Split-Path -Parent $root) '.env'
+if (Test-Path $envFile) {
+    foreach ($line in Get-Content $envFile) {
+        $line = $line.Trim()
+        if (-not $line -or $line.StartsWith('#') -or -not $line.Contains('=')) { continue }
+        $name, $value = $line.Split('=', 2)
+        $name = $name.Trim(); $value = $value.Trim().Trim('"').Trim("'")
+        if ($name -in @('OPENROUTER_MODEL','OPENROUTER_API_KEY') `
+                -and -not [Environment]::GetEnvironmentVariable($name, 'Process')) {
+            [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+        }
+    }
+}
+if ($env:OPENROUTER_MODEL -and $env:OPENROUTER_API_KEY) {
+    Write-Host "[dev] OpenRouter credentials loaded (model: $env:OPENROUTER_MODEL)" -ForegroundColor DarkGray
+} else {
+    Write-Host "[dev] WARNING: OPENROUTER_MODEL/OPENROUTER_API_KEY not set; /chat will 502" -ForegroundColor Yellow
+}
+
 $logDir = Join-Path $root 'out\logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $buildPs1 = Join-Path $PSScriptRoot 'build.ps1'
