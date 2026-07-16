@@ -85,6 +85,8 @@ gateway_resp:    resb CAP_GATEWAY_RESP ; raw OpenRouter response JSON
 gateway_guard_hi: resq 1
 global gateway_draft
 gateway_draft:   resb CAP_GATEWAY_DRAFT
+global gateway_draft2
+gateway_draft2:  resb CAP_GATEWAY_DRAFT
 global decode_target_ptr
 decode_target_ptr: resq 1
 global decode_target_cap

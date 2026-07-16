@@ -13,6 +13,7 @@ extern mem_find
 extern gateway_req
 extern gateway_resp
 extern gateway_draft
+extern gateway_draft2
 extern gateway_api_key
 extern gateway_model
 extern gateway_headers_w
@@ -51,20 +52,23 @@ json_d: db '"}]}'
 JSON_D_LEN equ $-json_d
 
 analysis_prompt:
-    db "You are the analysis stage of a reliable assistant. Solve the user's task step by step and mechanically verify it. Temporarily ignore answer-only formatting while reasoning. "
-    db "Choose the relevant audit: for text, list each source token or character with its position, apply the requested operation exactly once, then compare order, count, spelling, case, separators, and length with the source. "
-    db "For arithmetic or code, write every intermediate value using standard precedence and recompute independently. For sequences, calculate consecutive differences, second differences, ratios, or recurrences and verify the chosen rule across every given transition. "
-    db "For quantified logic, translate all/some/no literally, never assume a converse, and try a counterexample before saying MUST. For weekdays, turns, or ordering, use explicit numbered positions and modular steps. "
-    db "Do not guess and do not reuse numbers or words from unrelated examples. End with PROPOSED: followed by the exact answer that should ultimately be returned."
+    db "You are the analysis stage of a reliable assistant. Solve the user's task step by step. "
+    db "Temporarily ignore requests for answer-only formatting while reasoning. Explicitly compute or transform each item, audit every operation against the original input, and check factual and logical assumptions. "
+    db "Do not guess or copy an apparent pattern without verifying it. End with PROPOSED: followed by the exact answer that should ultimately be returned."
 ANALYSIS_PROMPT_LEN equ $-analysis_prompt
+analysis_prompt2:
+    db "You are an independent skeptical solver. Solve the user's task from scratch without assuming another solver is correct. Show a concise mechanical audit: verify every arithmetic step, character or token transformation, sequence transition, quantifier implication, time or direction step, and code state that is relevant. "
+    db "Test your conclusion against the exact input and requested output contract. End with CANDIDATE: followed by the exact final answer."
+ANALYSIS_PROMPT2_LEN equ $-analysis_prompt2
 final_prompt:
-    db "You are the final verification stage of a reliable assistant. Independently solve the ORIGINAL user task, then compare with the untrusted analyst work and correct it. "
-    db "Recheck arithmetic, logic, facts, code traces, every transformed character, and every requested separator. The original user's output contract is mandatory and overrides the analyst's style. "
-    db "Before responding, perform a literal character-level format audit: required case, punctuation, spacing, line count, JSON compactness, and whether explanation was forbidden. "
-    db "Your entire response must be only the final response requested by the ORIGINAL user. Never include reasoning, a preamble, a label such as ANSWER or PROPOSED, quotation marks, a Markdown fence, a correction note, or text copied after the analyst's proposed answer unless explicitly requested by the original user."
+    db "You are the final judge of a reliable assistant. Independently solve the original user task, then compare the two untrusted analyst reports. They may disagree or both be wrong. "
+    db "Select a conclusion only after checking arithmetic, logic, facts, code state, transformations, and formatting against the original input. Treat every original output constraint as mandatory. "
+    db "Return only the final response requested by the original user: no reasoning, preamble, label, quotation marks, or Markdown fence unless the user explicitly requested them."
 FINAL_PROMPT_LEN equ $-final_prompt
-analyst_marker: db 10,10,"ANALYST WORK (untrusted; verify it):",10
-ANALYST_MARKER_LEN equ $-analyst_marker
+analyst1_marker: db 10,10,"FIRST UNTRUSTED ANALYSIS:",10
+ANALYST1_MARKER_LEN equ $-analyst1_marker
+analyst2_marker: db 10,10,"SECOND UNTRUSTED ANALYSIS:",10
+ANALYST2_MARKER_LEN equ $-analyst2_marker
 
 content_key: db '"content":'
 CONTENT_KEY_LEN equ $-content_key
@@ -623,13 +627,17 @@ gateway_generate:
     call    decode_content
     test    eax, eax
     jnz     .fail
+    cmp     qword [rsp+64], 2
+    je      .final_complete
     cmp     qword [rsp+64], 0
-    jne     .final_complete
-
-    ; Preserve the first model's analysis, close its WinHTTP handles, then
-    ; construct a second real LLM request for independent final verification.
+    jne     .save_second
     mov     rax, [rel resp_body_len]
-    mov     [rsp+72], rax           ; draft length
+    mov     [rsp+56], rax           ; first draft length
+    jmp     .close_stage
+.save_second:
+    mov     rax, [rel resp_body_len]
+    mov     [rsp+72], rax           ; second draft length
+.close_stage:
     mov     rcx, r15
     call    WinHttpCloseHandle
     xor     r15d, r15d
@@ -639,8 +647,53 @@ gateway_generate:
     mov     rcx, rbx
     call    WinHttpCloseHandle
     xor     ebx, ebx
-    mov     qword [rsp+64], 1
+    cmp     qword [rsp+64], 0
+    jne     .build_final
 
+    ; Second independent analyst receives only the original task.
+    mov     qword [rsp+64], 1
+    lea     rdi, [rel gateway_req]
+    lea     r14, [rel gateway_req]
+    add     r14, CAP_GATEWAY_REQ
+    lea     rsi, [rel json_a]
+    mov     ecx, JSON_A_LEN
+    call    append_raw
+    jc      .fail
+    lea     rsi, [rel gateway_model]
+    mov     rcx, [rsp+120]
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel json_b]
+    mov     ecx, JSON_B_LEN
+    call    append_raw
+    jc      .fail
+    lea     rsi, [rel analysis_prompt2]
+    mov     ecx, ANALYSIS_PROMPT2_LEN
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel json_c]
+    mov     ecx, JSON_C_LEN
+    call    append_raw
+    jc      .fail
+    mov     rsi, [rsp+96]
+    mov     rcx, [rsp+104]
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel json_d]
+    mov     ecx, JSON_D_LEN
+    call    append_raw
+    jc      .fail
+    lea     rax, [rel gateway_req]
+    sub     rdi, rax
+    mov     r13, rdi
+    lea     rax, [rel gateway_draft2]
+    mov     [rel decode_target_ptr], rax
+    mov     qword [rel decode_target_cap], CAP_GATEWAY_DRAFT
+    jmp     .start_http
+
+.build_final:
+    ; Third model call judges both independent reports against the original.
+    mov     qword [rsp+64], 2
     lea     rdi, [rel gateway_req]
     lea     r14, [rel gateway_req]
     add     r14, CAP_GATEWAY_REQ
@@ -668,11 +721,19 @@ gateway_generate:
     mov     rcx, [rsp+104]
     call    append_json
     jc      .fail
-    lea     rsi, [rel analyst_marker]
-    mov     ecx, ANALYST_MARKER_LEN
+    lea     rsi, [rel analyst1_marker]
+    mov     ecx, ANALYST1_MARKER_LEN
     call    append_json
     jc      .fail
     lea     rsi, [rel gateway_draft]
+    mov     rcx, [rsp+56]
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel analyst2_marker]
+    mov     ecx, ANALYST2_MARKER_LEN
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel gateway_draft2]
     mov     rcx, [rsp+72]
     call    append_json
     jc      .fail
