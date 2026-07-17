@@ -33,11 +33,10 @@ if (Test-Path $envFile) {
         }
     }
 }
-if ($env:OPENROUTER_MODEL -and $env:OPENROUTER_API_KEY) {
-    Write-Host "[dev] OpenRouter credentials loaded (model: $env:OPENROUTER_MODEL)" -ForegroundColor DarkGray
-} else {
-    Write-Host "[dev] WARNING: OPENROUTER_MODEL/OPENROUTER_API_KEY not set; /chat will 502" -ForegroundColor Yellow
+if (-not $env:OPENROUTER_MODEL -or -not $env:OPENROUTER_API_KEY) {
+    throw 'OPENROUTER_MODEL and OPENROUTER_API_KEY must be set in the shared .env'
 }
+Write-Host "[dev] OpenRouter credentials loaded (model: $env:OPENROUTER_MODEL)" -ForegroundColor DarkGray
 
 $logDir = Join-Path $root 'out\logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
@@ -141,6 +140,12 @@ function Invoke-BuildSwap {
         if ($global:LkgExe) { Start-New $global:LkgExe $global:LkgBuild | Out-Null }
         $state.Building = $false
         return
+    }
+    Write-Host "[dev] server bound — open http://127.0.0.1:8080/" -ForegroundColor Cyan
+    $serverLog = Join-Path $root 'out\logs\server.log'
+    if (Test-Path $serverLog) {
+        Write-Host "[dev] recent logs:" -ForegroundColor DarkGray
+        Get-Content -Path $serverLog -Tail 15 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     }
     if (-not $NoTest) {
         & powershell.exe -NoProfile -File $testPs1 -ExpectedBuild $info.buildId 2>&1 | ForEach-Object { Write-Host "    $_" }
