@@ -1,7 +1,7 @@
 ; ===========================================================================
-; engine_gateway.asm - native OpenRouter HTTPS chat-completions client.
-; TLS, authentication, JSON encoding/decoding, and response extraction all
-; execute in this Assembly module through the documented Windows WinHTTP API.
+; engine_gateway.asm - async OpenRouter HTTPS client with event-loop
+; state machine. TLS, authentication, JSON encoding/decoding, and response
+; extraction all execute in this Assembly module through WinHTTP's async API.
 ; ===========================================================================
 %include "win64.inc"
 %include "winapi.inc"
@@ -24,6 +24,24 @@ extern resp_body_ptr
 extern resp_body_len
 extern resp_ct_ptr
 extern resp_ct_len
+extern gw_state
+extern gw_stage
+extern gw_event
+extern gw_read_len
+extern gw_err_code
+extern gw_hSession
+extern gw_hConnect
+extern gw_hRequest
+extern gw_draft1_len
+extern gw_draft2_len
+extern gw_user_msg
+extern gw_user_msg_len
+extern gw_model_len
+extern gw_key_len
+extern gw_headers_len
+extern log_err
+extern log_err_code
+extern resp_set_error
 
 default rel
 
@@ -76,11 +94,38 @@ CONTENT_KEY_LEN equ $-content_key
 gw_ct: db "text/plain; charset=utf-8"
 GW_CT_LEN equ $-gw_ct
 
+; Error strings for log_err
+s_noapikey: db "gateway: env key"
+S_NOAPIKEY_LEN equ $-s_noapikey
+s_nomodel: db "gateway: env model"
+S_NOMODEL_LEN equ $-s_nomodel
+s_openfail: db "gateway: Open"
+S_OPENFAIL_LEN equ $-s_openfail
+s_connfail: db "gateway: Connect"
+S_CONNFAIL_LEN equ $-s_connfail
+s_reqfail: db "gateway: OpenReq"
+S_REQFAIL_LEN equ $-s_reqfail
+s_sendfail: db "gateway: SendReq"
+S_SENDFAIL_LEN equ $-s_sendfail
+s_recvfail: db "gateway: RecvResp"
+S_RECVFAIL_LEN equ $-s_recvfail
+s_badstatus: db "gateway: !200"
+S_BADSTATUS_LEN equ $-s_badstatus
+s_readfail: db "gateway: ReadData"
+S_READFAIL_LEN equ $-s_readfail
+s_decodefail: db "gateway: decode"
+S_DECODEFAIL_LEN equ $-s_decodefail
+s_ovf: db "gateway: overflow"
+S_OVF_LEN equ $-s_ovf
+
+
 section .text
 
-; append_raw - append counted bytes to the request buffer.
-; Inputs: RDI=cursor, RSI=source, RCX=count, R14=end. Output: RDI advanced,
-; CF set on overflow. This internal helper intentionally advances RSI/RCX.
+; =========================================================================
+; append_raw / append_json / append_wide / hex_nibble / decode_content
+; Unchanged from the synchronous implementation.
+; =========================================================================
+
 append_raw:
     mov     rax, rdi
     add     rax, rcx
@@ -94,9 +139,6 @@ append_raw:
     stc
     ret
 
-; append_json - append a UTF-8 string escaped as JSON string content.
-; Handles all JSON control escapes; input UTF-8 bytes >= 0x20 pass through.
-; Inputs: RDI=cursor, RSI=source, RCX=count, R14=end. Output as append_raw.
 append_json:
 .next:
     test    rcx, rcx
@@ -148,7 +190,6 @@ append_json:
     add     rdi, 2
     jmp     .next
 .bad_control:
-    ; Encode uncommon C0 controls as \u00XX.
     mov     rax, rdi
     add     rax, 6
     cmp     rax, r14
@@ -183,8 +224,6 @@ append_json:
     stc
     ret
 
-; append_wide - widen counted ASCII bytes into a UTF-16 header buffer.
-; Inputs: RDI=wide cursor, RSI=ASCII, RCX=count, R14=wide-buffer byte end.
 append_wide:
 .loop:
     test    rcx, rcx
@@ -204,7 +243,6 @@ append_wide:
 .overflow: stc
     ret
 
-; hex_nibble - convert one ASCII hex digit. CF set if invalid.
 hex_nibble:
     cmp     al, '0'
     jb      .bad
@@ -226,8 +264,6 @@ hex_nibble:
     stc
     ret
 
-; decode_content - extract and JSON-decode choices[0].message.content.
-; Input: gateway_resp/gw_used. Output: RAX=0 and resp globals, else 1.
 decode_content:
     push    rbp
     mov     rbp, rsp
@@ -237,7 +273,7 @@ decode_content:
     push    r12
     push    r13
     push    r14
-    sub     rsp, 32                 ; six saved regs leave RSP call-aligned
+    sub     rsp, 32
     lea     rcx, [rel gateway_resp]
     mov     rdx, [rel gw_used]
     lea     r8,  [rel content_key]
@@ -269,7 +305,7 @@ decode_content:
     jne     .fail
     inc     rsi
     mov     rdi, [rel decode_target_ptr]
-    mov     r12, rdi                 ; decoded start
+    mov     r12, rdi
     mov     r13, rdi
     add     r13, [rel decode_target_cap]
 .decode:
@@ -303,7 +339,6 @@ decode_content:
     je      .esc_t
     cmp     al, 'u'
     jne     .fail
-    ; Decode one BMP \uXXXX value to UTF-8 (surrogates become '?').
     mov     ecx, 4
     xor     ebx, ebx
 .hex_loop:
@@ -382,7 +417,6 @@ decode_content:
     inc     rdi
     jmp     .decode
 .done:
-    ; Match the former relay's strip(): trim outer ASCII whitespace only.
 .trim_left:
     cmp     r12, rdi
     jae     .fail
@@ -434,11 +468,275 @@ decode_content:
     pop     rbp
     ret
 
-; gateway_generate - call OpenRouter and expose the decoded model answer.
-; Inputs: RCX=user UTF-8 pointer, RDX=length.
-; Output: RAX=0 success, HTTP_502 failure. No non-LLM answer path exists.
-global gateway_generate
-gateway_generate:
+; =========================================================================
+; gateway_start - initiate async /chat round. Called from router.asm.
+; Inputs:  RCX = user message pointer, RDX = user message length.
+; Outputs: RAX = 0 (started, gw_state != GW_IDLE), 1 (busy/error).
+; Clobbers: volatile. Preserves all Win64 nonvolatile registers it uses.
+; =========================================================================
+global gateway_start
+gateway_start:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx                     ; user msg ptr
+    push    r12                     ; user msg len
+    push    rsi
+    push    rdi
+    push    r14
+    sub     rsp, 40                 ; shadow(32)+alignment; call-aligned
+
+    mov     rbx, rcx                ; save msg ptr in non-volatile
+    mov     r12, rdx                ; save msg len in non-volatile
+
+    ; Single-flight check
+    cmp     dword [rel gw_state], GW_IDLE
+    jne     .busy
+
+    ; Read OPENROUTER_API_KEY
+    lea     rcx, [rel env_api_key]
+    lea     rdx, [rel gateway_api_key]
+    mov     r8d, CAP_API_KEY
+    call    GetEnvironmentVariableA
+    test    eax, eax
+    jz      .fail_key
+    cmp     eax, CAP_API_KEY
+    jae     .fail_key
+    mov     [rel gw_key_len], eax
+
+    ; Read OPENROUTER_MODEL
+    lea     rcx, [rel env_model]
+    lea     rdx, [rel gateway_model]
+    mov     r8d, CAP_MODEL
+    call    GetEnvironmentVariableA
+    test    eax, eax
+    jz      .fail_model
+    cmp     eax, CAP_MODEL
+    jae     .fail_model
+    mov     [rel gw_model_len], eax
+
+    ; Copy user message to gw_user_msg (max CAP_CHAT_BODY)
+    lea     rdi, [rel gw_user_msg]
+    mov     rsi, rbx                ; src = msg ptr
+    cmp     r12, CAP_CHAT_BODY
+    jbe     .msg_copy_len_ok
+    mov     r12d, CAP_CHAT_BODY
+.msg_copy_len_ok:
+    mov     [rel gw_user_msg_len], r12
+    mov     rcx, r12                ; count
+    rep movsb
+
+    ; Build UTF-16 auth headers once (reused across all 3 stages)
+    lea     rdi, [rel gateway_headers_w]
+    lea     r14, [rel gateway_headers_w]
+    add     r14, CAP_AUTH_WCHARS*2
+    lea     rsi, [rel auth_prefix]
+    mov     ecx, AUTH_PREFIX_LEN
+    call    append_wide
+    jc      .fail_ovf
+    lea     rsi, [rel gateway_api_key]
+    mov     ecx, [rel gw_key_len]
+    call    append_wide
+    jc      .fail_ovf
+    lea     rsi, [rel auth_suffix]
+    mov     ecx, AUTH_SUFFIX_LEN
+    call    append_wide
+    jc      .fail_ovf
+    ; Compute WCHAR count
+    lea     rax, [rel gateway_headers_w]
+    sub     rdi, rax
+    shr     rdi, 1
+    mov     [rel gw_headers_len], edi
+
+    ; Init state machine
+    mov     dword [rel gw_state], GW_OPEN_SESSION
+    mov     dword [rel gw_stage], 0
+    mov     dword [rel gw_err_code], 0
+    mov     dword [rel gw_read_len], 0
+    mov     qword [rel gw_hSession], 0
+    mov     qword [rel gw_hConnect], 0
+    mov     qword [rel gw_hRequest], 0
+    xor     eax, eax                ; return 0 (started)
+    jmp     .out
+
+.busy:
+    xor     eax, eax
+    inc     eax                     ; 1: busy
+    jmp     .out
+.fail_key:
+    lea     rcx, [rel s_noapikey]
+    mov     rdx, S_NOAPIKEY_LEN
+    call    log_err
+    xor     eax, eax
+    inc     eax
+    jmp     .out
+.fail_model:
+    lea     rcx, [rel s_nomodel]
+    mov     rdx, S_NOMODEL_LEN
+    call    log_err
+    xor     eax, eax
+    inc     eax
+    jmp     .out
+.fail_ovf:
+    lea     rcx, [rel s_ovf]
+    mov     rdx, S_OVF_LEN
+    call    log_err
+    xor     eax, eax
+    inc     eax
+.out:
+    add     rsp, 40
+    pop     r14
+    pop     rdi
+    pop     rsi
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; =========================================================================
+; build_req_body - build JSON body in gateway_req for current gw_stage.
+; Input:  gw_stage determines which prompt + markers to include.
+; Output: r13 = body length in bytes; CF=0 ok, CF=1 overflow.
+; Also sets decode_target_ptr/cap for the decode after this stage.
+; Clobbers: rdi, rsi, r14, r13 (body length).
+; =========================================================================
+build_req_body:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx                     ; gw_stage
+    sub     rsp, 40                 ; shadow + alignment
+
+    mov     ebx, [rel gw_stage]
+
+    ; Begin JSON body in gateway_req
+    lea     rdi, [rel gateway_req]
+    lea     r14, [rel gateway_req]
+    add     r14, CAP_GATEWAY_REQ
+
+    ; {"model":"
+    lea     rsi, [rel json_a]
+    mov     ecx, JSON_A_LEN
+    call    append_raw
+    jc      .fail
+
+    ; <model>
+    lea     rsi, [rel gateway_model]
+    movzx   ecx, word [rel gw_model_len]
+    call    append_json
+    jc      .fail
+
+    ; ",...messages:[{"role":"system","content":"
+    lea     rsi, [rel json_b]
+    mov     ecx, JSON_B_LEN
+    call    append_raw
+    jc      .fail
+
+    ; System prompt based on stage
+    test    ebx, ebx
+    jnz     .not_stage0
+    lea     rsi, [rel analysis_prompt]
+    mov     ecx, ANALYSIS_PROMPT_LEN
+    jmp     .emit_prompt
+.not_stage0:
+    cmp     ebx, 1
+    jne     .stage2
+    lea     rsi, [rel analysis_prompt2]
+    mov     ecx, ANALYSIS_PROMPT2_LEN
+    jmp     .emit_prompt
+.stage2:
+    lea     rsi, [rel final_prompt]
+    mov     ecx, FINAL_PROMPT_LEN
+.emit_prompt:
+    call    append_json
+    jc      .fail
+
+    ; "},{"role":"user","content":"
+    lea     rsi, [rel json_c]
+    mov     ecx, JSON_C_LEN
+    call    append_raw
+    jc      .fail
+
+    ; User message (always present, from gw_user_msg)
+    lea     rsi, [rel gw_user_msg]
+    mov     rcx, [rel gw_user_msg_len]
+    call    append_json
+    jc      .fail
+
+    ; For stage >= 1: add analyst1_marker + gateway_draft
+    test    ebx, ebx
+    jz      .stage0_ending
+    lea     rsi, [rel analyst1_marker]
+    mov     ecx, ANALYST1_MARKER_LEN
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel gateway_draft]
+    mov     rcx, [rel gw_draft1_len]
+    call    append_json
+    jc      .fail
+
+    ; For stage == 2: add analyst2_marker + gateway_draft2
+    cmp     ebx, 2
+    jne     .stage0_ending
+    lea     rsi, [rel analyst2_marker]
+    mov     ecx, ANALYST2_MARKER_LEN
+    call    append_json
+    jc      .fail
+    lea     rsi, [rel gateway_draft2]
+    mov     rcx, [rel gw_draft2_len]
+    call    append_json
+    jc      .fail
+
+.stage0_ending:
+    ; ">]}
+    lea     rsi, [rel json_d]
+    mov     ecx, JSON_D_LEN
+    call    append_raw
+    jc      .fail
+
+    ; Body length
+    lea     rax, [rel gateway_req]
+    mov     r13, rdi
+    sub     r13, rax
+
+    ; Set decode target for the response of this stage
+    test    ebx, ebx
+    jnz     .not_dt0
+    lea     rax, [rel gateway_draft]
+    mov     [rel decode_target_ptr], rax
+    mov     qword [rel decode_target_cap], CAP_GATEWAY_DRAFT
+    jmp     .ok
+.not_dt0:
+    cmp     ebx, 1
+    jne     .dt_final
+    lea     rax, [rel gateway_draft2]
+    mov     [rel decode_target_ptr], rax
+    mov     qword [rel decode_target_cap], CAP_GATEWAY_DRAFT
+    jmp     .ok
+.dt_final:
+    lea     rax, [rel gateway_req]
+    mov     [rel decode_target_ptr], rax
+    mov     qword [rel decode_target_cap], CAP_GATEWAY_REQ
+.ok:
+    clc
+    jmp     .out
+
+.fail:
+    stc
+.out:
+    add     rsp, 40
+    pop     rbx
+    pop     rbp
+    ret
+
+; =========================================================================
+; gateway_advance - state machine called from event loop.
+; Input:  uses gw_state, gateway globals.
+; Output: RAX = 0 (in progress), 200 (success, resp_* set), 502 (error).
+;
+; Internal loop: keeps advancing through sync states without returning;
+; only returns when an async wait is needed or the machine terminates.
+; =========================================================================
+global gateway_advance
+gateway_advance:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -448,343 +746,453 @@ gateway_generate:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 136                ; seven saved regs require +8 alignment
-    mov     [rsp+96], rcx           ; user pointer
-    mov     [rsp+104], rdx          ; user length
-    mov     qword [rsp+64], 0       ; stage: 0=analysis, 1=final
-    xor     ebx, ebx                ; session handle
-    xor     r12d, r12d              ; connection handle
-    xor     r15d, r15d              ; request handle
+    sub     rsp, 72                 ; shadow + work space (+8 for stack alignment)
 
-    ; Configuration is inherited from run.ps1, which reads the shared .env.
-    lea     rcx, [rel env_api_key]
-    lea     rdx, [rel gateway_api_key]
-    mov     r8d, CAP_API_KEY
-    call    GetEnvironmentVariableA
-    test    eax, eax
-    jz      .fail
-    cmp     eax, CAP_API_KEY
-    jae     .fail
-    mov     [rsp+112], rax          ; key length
-    lea     rcx, [rel env_model]
-    lea     rdx, [rel gateway_model]
-    mov     r8d, CAP_MODEL
-    call    GetEnvironmentVariableA
-    test    eax, eax
-    jz      .fail
-    cmp     eax, CAP_MODEL
-    jae     .fail
-    mov     [rsp+120], rax          ; model length
+.advance_loop:
+    ; Check for async errors set by callback (TLS failure, etc.)
+    ; If set, go straight to terminal cleanup — don't try to advance.
+    cmp     dword [rel gw_err_code], 0
+    jne     .st_terminal
+    ; Check which state we're in and jump
+    mov     eax, [rel gw_state]
+    cmp     eax, GW_OPEN_SESSION
+    je      .st_open_session
+    cmp     eax, GW_OPEN_REQUEST
+    je      .st_open_request
+    cmp     eax, GW_SEND_PENDING
+    je      .st_send_pending
+    cmp     eax, GW_RECV_PENDING
+    je      .st_recv_pending
+    cmp     eax, GW_READ_PENDING
+    je      .st_read_pending
+    cmp     eax, GW_DECODE
+    je      .st_decode
+    cmp     eax, GW_TERMINAL
+    je      .st_terminal
+    ; GW_IDLE or unrecognized: nothing to do
+    xor     eax, eax                ; GW_RET_PROGRESS = 0
+    jmp     .out
 
-    ; Construct the OpenRouter request body with strict JSON escaping.
-    lea     rdi, [rel gateway_req]
-    lea     r14, [rel gateway_req]
-    add     r14, CAP_GATEWAY_REQ
-    lea     rsi, [rel json_a]
-    mov     ecx, JSON_A_LEN
-    call    append_raw
-    jc      .fail
-    lea     rsi, [rel gateway_model]
-    mov     rcx, [rsp+120]
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel json_b]
-    mov     ecx, JSON_B_LEN
-    call    append_raw
-    jc      .fail
-    lea     rsi, [rel analysis_prompt]
-    mov     ecx, ANALYSIS_PROMPT_LEN
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel json_c]
-    mov     ecx, JSON_C_LEN
-    call    append_raw
-    jc      .fail
-    mov     rsi, [rsp+96]
-    mov     rcx, [rsp+104]
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel json_d]
-    mov     ecx, JSON_D_LEN
-    call    append_raw
-    jc      .fail
-    lea     rax, [rel gateway_req]
-    sub     rdi, rax
-    mov     r13, rdi                ; request body byte length
-    lea     rax, [rel gateway_draft]
-    mov     [rel decode_target_ptr], rax
-    mov     qword [rel decode_target_cap], CAP_GATEWAY_DRAFT
-
-    ; Build UTF-16 Authorization and Content-Type headers.
-    lea     rdi, [rel gateway_headers_w]
-    lea     r14, [rel gateway_headers_w]
-    add     r14, CAP_AUTH_WCHARS*2
-    lea     rsi, [rel auth_prefix]
-    mov     ecx, AUTH_PREFIX_LEN
-    call    append_wide
-    jc      .fail
-    lea     rsi, [rel gateway_api_key]
-    mov     rcx, [rsp+112]
-    call    append_wide
-    jc      .fail
-    lea     rsi, [rel auth_suffix]
-    mov     ecx, AUTH_SUFFIX_LEN
-    call    append_wide
-    jc      .fail
-    lea     rax, [rel gateway_headers_w]
-    sub     rdi, rax
-    shr     rdi, 1
-    mov     [rsp+88], rdi           ; header character count
-
-.start_http:
+; -----------------------------------------------------------------------
+; GW_OPEN_SESSION - first-time setup (all sync, all immediate).
+; WinHttpOpen + SetStatusCallback + SetTimeouts + Connect.
+; -----------------------------------------------------------------------
+.st_open_session:
+    ; WinHttpOpen(async mode)
     lea     rcx, [rel ua_w]
     mov     edx, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
     xor     r8d, r8d
     xor     r9d, r9d
-    mov     qword [rsp+32], 0
+    mov     qword [rsp+32], WINHTTP_FLAG_ASYNC
     call    WinHttpOpen
     test    rax, rax
-    jz      .fail
-    mov     rbx, rax
-    mov     rcx, rbx
+    jz      .fail_open
+    mov     [rel gw_hSession], rax
+
+    ; Register the async callback (once on session; inherited by children)
+    mov     rcx, [rel gw_hSession]
+    lea     rdx, [rel gw_callback]           ; function pointer
+    mov     r8d, WINHTTP_CALLBACK_FLAG_ALL_NOTIFICATIONS
+    xor     r9d, r9d                         ; dwReserved = 0
+    call    WinHttpSetStatusCallback
+    ; Return value is the old callback or WINHTTP_INVALID_STATUS_CALLBACK
+    ; If it fails, no async notifications arrive — treat as fatal.
+    cmp     rax, WINHTTP_INVALID_STATUS_CALLBACK
+    je      .fail_open
+
+    ; SetTimeouts (rcx = hSession already from prev call? No, clobbered.)
+    mov     rcx, [rel gw_hSession]
     mov     edx, 10000
     mov     r8d, 10000
     mov     r9d, 60000
     mov     qword [rsp+32], 60000
     call    WinHttpSetTimeouts
     test    eax, eax
-    jz      .fail
-    mov     rcx, rbx
+    jz      .fail_open
+
+    ; WinHttpConnect
+    mov     rcx, [rel gw_hSession]
     lea     rdx, [rel host_w]
     mov     r8d, 443
     xor     r9d, r9d
     call    WinHttpConnect
     test    rax, rax
-    jz      .fail
-    mov     r12, rax
-    mov     rcx, r12
+    jz      .fail_conn
+    mov     [rel gw_hConnect], rax
+
+    ; All sync setup done — advance to OPEN_REQUEST
+    mov     dword [rel gw_state], GW_OPEN_REQUEST
+    jmp     .advance_loop
+
+; -----------------------------------------------------------------------
+; GW_OPEN_REQUEST - create request handle, build body, send async.
+; -----------------------------------------------------------------------
+.st_open_request:
+    ; Close previous request handle if any (stage 2+ reuse)
+    mov     rcx, [rel gw_hRequest]
+    test    rcx, rcx
+    jz      .no_prev_req
+    call    WinHttpCloseHandle
+    mov     qword [rel gw_hRequest], 0
+.no_prev_req:
+
+    ; WinHttpOpenRequest
+    mov     rcx, [rel gw_hConnect]
     lea     rdx, [rel post_w]
     lea     r8,  [rel path_w]
-    xor     r9d, r9d
-    mov     qword [rsp+32], 0
-    mov     qword [rsp+40], 0
+    xor     r9d, r9d                         ; lpszVersion = NULL (HTTP/1.1)
+    mov     qword [rsp+32], 0                 ; lpszReferrer
+    mov     qword [rsp+40], 0                 ; lplpszAcceptTypes
     mov     qword [rsp+48], WINHTTP_FLAG_SECURE
     call    WinHttpOpenRequest
     test    rax, rax
-    jz      .fail
-    mov     r15, rax
-    mov     rcx, r15
-    lea     rdx, [rel gateway_headers_w]
-    mov     r8d, [rsp+88]
-    lea     r9,  [rel gateway_req]
-    mov     [rsp+32], r13
-    mov     [rsp+40], r13
-    mov     qword [rsp+48], 0
+    jz      .fail_req
+    mov     [rel gw_hRequest], rax
+
+    ; Build JSON body for current stage
+    call    build_req_body
+    jc      .fail_ovf
+
+    ; Set state BEFORE async call so an immediate callback cannot race.
+    mov     dword [rel gw_state], GW_SEND_PENDING
+
+    ; SendRequest with body (async)
+    mov     rcx, [rel gw_hRequest]
+    lea     rdx, [rel gateway_headers_w]     ; UTF-16 headers
+    mov     r8d, [rel gw_headers_len]        ; header WCHAR count (dwHeadersLength)
+    lea     r9,  [rel gateway_req]            ; lpOptional (body)
+    mov     qword [rsp+32], r13               ; dwOptionalLength
+    mov     qword [rsp+40], r13               ; dwTotalLength
+    mov     qword [rsp+48], 0                 ; dwContext
     call    WinHttpSendRequest
     test    eax, eax
-    jz      .fail
-    mov     rcx, r15
-    xor     edx, edx
+    jz      .fail_send                        ; FALSE = failure (never check ERROR_IO_PENDING)
+    xor     eax, eax                          ; GW_RET_PROGRESS
+    jmp     .out
+
+; -----------------------------------------------------------------------
+; GW_SEND_PENDING - send completed, issue ReceiveResponse async.
+; -----------------------------------------------------------------------
+.st_send_pending:
+    mov     dword [rel gw_state], GW_RECV_PENDING  ; set before async call
+    mov     rcx, [rel gw_hRequest]
+    xor     edx, edx                               ; lpReserved
     call    WinHttpReceiveResponse
     test    eax, eax
-    jz      .fail
+    jz      .fail_recv                              ; FALSE = failure
+    xor     eax, eax
+    jmp     .out
 
-    ; Require a numeric HTTP 200 before accepting response content.
-    mov     dword [rsp+80], 4        ; status buffer size
-    mov     dword [rsp+84], 0        ; status value
-    mov     rcx, r15
+; -----------------------------------------------------------------------
+; GW_RECV_PENDING - response received. Query status, start reading.
+; -----------------------------------------------------------------------
+.st_recv_pending:
+    ; Query HTTP status code (sync)
+    mov     dword [rsp+60], 4                ; buffer size
+    mov     dword [rsp+56], 0                ; status value
+    mov     rcx, [rel gw_hRequest]
     mov     edx, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER
-    xor     r8d, r8d
-    lea     r9, [rsp+84]
-    lea     rax, [rsp+80]
-    mov     [rsp+32], rax
-    mov     qword [rsp+40], 0
+    xor     r8d, r8d                         ; dwInfoLevel modifier
+    lea     r9,  [rsp+56]                    ; lpdwStatusCode (output)
+    lea     rax, [rsp+60]
+    mov     qword [rsp+32], rax              ; lpdwBufferLength
+    mov     qword [rsp+40], 0                ; lpdwHeader (unused)
     call    WinHttpQueryHeaders
     test    eax, eax
-    jz      .fail
-    cmp     dword [rsp+84], 200
-    jne     .fail
+    jz      .fail_conn                       ; query failure
 
+    cmp     dword [rsp+56], 200
+    jne     .fail_status
+
+    ; Begin reading response body — async, R9=NULL (never use lpdwNumberOfBytesRead
+    ; in async mode; byte count arrives via READ_COMPLETE callback at [rbp+48]).
     mov     qword [rel gw_used], 0
-.read:
-    mov     rax, CAP_GATEWAY_RESP
-    sub     rax, [rel gw_used]
-    jz      .fail
-    mov     rcx, r15
+    mov     dword [rel gw_state], GW_READ_PENDING    ; set before async call
+
+    mov     rcx, [rel gw_hRequest]
     lea     rdx, [rel gateway_resp]
-    add     rdx, [rel gw_used]
-    mov     r8d, eax
-    lea     r9, [rsp+76]             ; DWORD bytes read
-    mov     dword [rsp+76], 0
+    mov     r8d, CAP_GATEWAY_RESP
+    xor     r9d, r9d                                  ; NULL: don't pass lpdwNumberOfBytesRead
     call    WinHttpReadData
     test    eax, eax
-    jz      .fail
-    mov     eax, [rsp+76]
+    jz      .fail_read                                 ; FALSE = failure
+    xor     eax, eax
+    jmp     .out
+
+; -----------------------------------------------------------------------
+; GW_READ_PENDING - callback fired with ReadData. Process chunk.
+; -----------------------------------------------------------------------
+.st_read_pending:
+    mov     eax, [rel gw_read_len]           ; set by READ_COMPLETE callback
     test    eax, eax
-    jz      .read_done
+    jz      .decode_now                      ; EOF
+
     add     [rel gw_used], rax
-    jmp     .read
-.read_done:
+    mov     eax, [rel gw_used]
+    cmp     eax, CAP_GATEWAY_RESP
+    jae     .decode_now                      ; buffer full
+
+    ; Issue another ReadData for the next chunk — all reads use the same
+    ; async pattern: set state before call, R9=NULL, no sync fallback.
+    mov     dword [rel gw_state], GW_READ_PENDING
+
+    mov     rcx, [rel gw_hRequest]
+    lea     rdx, [rel gateway_resp]
+    add     rdx, [rel gw_used]
+    mov     r8d, CAP_GATEWAY_RESP
+    sub     r8d, [rel gw_used]               ; remaining capacity
+    xor     r9d, r9d                          ; NULL: don't pass lpdwNumberOfBytesRead
+    call    WinHttpReadData
+    test    eax, eax
+    jz      .fail_read                        ; FALSE = failure
+    xor     eax, eax
+    jmp     .out
+
+.decode_now:
+    mov     dword [rel gw_state], GW_DECODE
+    jmp     .advance_loop
+
+; -----------------------------------------------------------------------
+; GW_DECODE - decode response, advance stage, build next body or done.
+; -----------------------------------------------------------------------
+.st_decode:
     call    decode_content
     test    eax, eax
-    jnz     .fail
-    cmp     qword [rsp+64], 2
-    je      .final_complete
-    cmp     qword [rsp+64], 0
-    jne     .save_second
+    jnz     .fail_decode
+
+    ; Advance stage
+    mov     eax, [rel gw_stage]
+    inc     eax
+    mov     [rel gw_stage], eax
+
+    cmp     eax, 3
+    jae     .done_ok                         ; all 3 calls complete
+
+    ; Save draft length for next stage's body building
+    cmp     eax, 1
+    jne     .save_draft2
+    ; Stage just went from 0→1: save first draft (gateway_draft length)
     mov     rax, [rel resp_body_len]
-    mov     [rsp+56], rax           ; first draft length
-    jmp     .close_stage
-.save_second:
+    mov     [rel gw_draft1_len], rax
+    jmp     .prep_next
+
+.save_draft2:
+    ; Stage went from 1→2: save second draft (gateway_draft2 length)
     mov     rax, [rel resp_body_len]
-    mov     [rsp+72], rax           ; second draft length
-.close_stage:
-    mov     rcx, r15
-    call    WinHttpCloseHandle
-    xor     r15d, r15d
-    mov     rcx, r12
-    call    WinHttpCloseHandle
-    xor     r12d, r12d
-    mov     rcx, rbx
-    call    WinHttpCloseHandle
-    xor     ebx, ebx
-    cmp     qword [rsp+64], 0
-    jne     .build_final
+    mov     [rel gw_draft2_len], rax
 
-    ; The second solver receives the original task and the first untrusted
-    ; proposal so it can locate and repair a concrete error.
-    mov     qword [rsp+64], 1
-    lea     rdi, [rel gateway_req]
-    lea     r14, [rel gateway_req]
-    add     r14, CAP_GATEWAY_REQ
-    lea     rsi, [rel json_a]
-    mov     ecx, JSON_A_LEN
-    call    append_raw
-    jc      .fail
-    lea     rsi, [rel gateway_model]
-    mov     rcx, [rsp+120]
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel json_b]
-    mov     ecx, JSON_B_LEN
-    call    append_raw
-    jc      .fail
-    lea     rsi, [rel analysis_prompt2]
-    mov     ecx, ANALYSIS_PROMPT2_LEN
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel json_c]
-    mov     ecx, JSON_C_LEN
-    call    append_raw
-    jc      .fail
-    mov     rsi, [rsp+96]
-    mov     rcx, [rsp+104]
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel analyst1_marker]
-    mov     ecx, ANALYST1_MARKER_LEN
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel gateway_draft]
-    mov     rcx, [rsp+56]
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel json_d]
-    mov     ecx, JSON_D_LEN
-    call    append_raw
-    jc      .fail
-    lea     rax, [rel gateway_req]
-    sub     rdi, rax
-    mov     r13, rdi
-    lea     rax, [rel gateway_draft2]
-    mov     [rel decode_target_ptr], rax
-    mov     qword [rel decode_target_cap], CAP_GATEWAY_DRAFT
-    jmp     .start_http
+.prep_next:
+    ; Build body for next stage (stage is now 1 or 2)
+    call    build_req_body
+    jc      .fail_ovf
 
-.build_final:
-    ; Third model call judges both independent reports against the original.
-    mov     qword [rsp+64], 2
-    lea     rdi, [rel gateway_req]
-    lea     r14, [rel gateway_req]
-    add     r14, CAP_GATEWAY_REQ
-    lea     rsi, [rel json_a]
-    mov     ecx, JSON_A_LEN
-    call    append_raw
-    jc      .fail
-    lea     rsi, [rel gateway_model]
-    mov     rcx, [rsp+120]
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel json_b]
-    mov     ecx, JSON_B_LEN
-    call    append_raw
-    jc      .fail
-    lea     rsi, [rel final_prompt]
-    mov     ecx, FINAL_PROMPT_LEN
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel json_c]
-    mov     ecx, JSON_C_LEN
-    call    append_raw
-    jc      .fail
-    mov     rsi, [rsp+96]
-    mov     rcx, [rsp+104]
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel analyst1_marker]
-    mov     ecx, ANALYST1_MARKER_LEN
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel gateway_draft]
-    mov     rcx, [rsp+56]
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel analyst2_marker]
-    mov     ecx, ANALYST2_MARKER_LEN
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel gateway_draft2]
-    mov     rcx, [rsp+72]
-    call    append_json
-    jc      .fail
-    lea     rsi, [rel json_d]
-    mov     ecx, JSON_D_LEN
-    call    append_raw
-    jc      .fail
-    lea     rax, [rel gateway_req]
-    sub     rdi, rax
-    mov     r13, rdi
-    lea     rax, [rel gateway_req]
-    mov     [rel decode_target_ptr], rax
-    mov     qword [rel decode_target_cap], CAP_GATEWAY_REQ
-    jmp     .start_http
+    ; Close request handle only (reuse session+connect)
+    mov     rcx, [rel gw_hRequest]
+    test    rcx, rcx
+    jz      .no_req_close
+    call    WinHttpCloseHandle
+    mov     qword [rel gw_hRequest], 0
+.no_req_close:
 
-.final_complete:
-    xor     r13d, r13d               ; final status success
-    jmp     .cleanup
-.fail:
-    mov     r13d, HTTP_502
-.cleanup:
-    test    r15, r15
-    jz      .close_connect
-    mov     rcx, r15
+    ; Go create a new request + send
+    mov     dword [rel gw_state], GW_OPEN_REQUEST
+    jmp     .advance_loop
+
+.done_ok:
+    ; All 3 calls complete. decode_content already set resp_* globals.
+    ; (For the final stage, decode_target was gateway_req.)
+    ; Close all WinHTTP handles and zero globals before returning.
+    ; Note: a late READ_COMPLETE callback for a previous read may still
+    ; fire; it will write gw_read_len and signal gw_event, but the event
+    ; loop will see GW_IDLE and return to WaitForMultipleObjects safely.
+    mov     rcx, [rel gw_hRequest]
+    test    rcx, rcx
+    jz      .done_hreq
     call    WinHttpCloseHandle
-.close_connect:
-    test    r12, r12
-    jz      .close_session
-    mov     rcx, r12
+    mov     qword [rel gw_hRequest], 0
+.done_hreq:
+    mov     rcx, [rel gw_hConnect]
+    test    rcx, rcx
+    jz      .done_hcon
     call    WinHttpCloseHandle
-.close_session:
-    test    rbx, rbx
-    jz      .out
-    mov     rcx, rbx
+    mov     qword [rel gw_hConnect], 0
+.done_hcon:
+    mov     rcx, [rel gw_hSession]
+    test    rcx, rcx
+    jz      .done_hses
     call    WinHttpCloseHandle
+    mov     qword [rel gw_hSession], 0
+.done_hses:
+    mov     dword [rel gw_state], GW_IDLE
+    mov     dword [rel gw_err_code], 0
+    mov     eax, GW_RET_DONE                ; 200
+    jmp     .out
+
+; -----------------------------------------------------------------------
+; GW_TERMINAL - close all handles, return 502 with deterministic body.
+; -----------------------------------------------------------------------
+.st_terminal:
+    ; Set deterministic error body before cleanup, so a late callback
+    ; cannot leave stale resp_* globals pointing to partial data.
+    call    resp_set_error
+
+    mov     rcx, [rel gw_hRequest]
+    test    rcx, rcx
+    jz      .tc_hreq
+    call    WinHttpCloseHandle
+    mov     qword [rel gw_hRequest], 0
+.tc_hreq:
+    mov     rcx, [rel gw_hConnect]
+    test    rcx, rcx
+    jz      .tc_hcon
+    call    WinHttpCloseHandle
+    mov     qword [rel gw_hConnect], 0
+.tc_hcon:
+    mov     rcx, [rel gw_hSession]
+    test    rcx, rcx
+    jz      .tc_hses
+    call    WinHttpCloseHandle
+    mov     qword [rel gw_hSession], 0
+.tc_hses:
+    mov     dword [rel gw_state], GW_IDLE
+    mov     dword [rel gw_err_code], 0      ; clear error for next gateway round
+    mov     eax, GW_RET_FAIL                ; 502
+    jmp     .out
+
+; -----------------------------------------------------------------------
+; Error helpers — log string, set state to GW_TERMINAL, loop.
+; -----------------------------------------------------------------------
+.fail_open:
+    lea     rcx, [rel s_openfail]
+    mov     rdx, S_OPENFAIL_LEN
+    call    log_err
+    jmp     .error_then_retry
+.fail_conn:
+    lea     rcx, [rel s_connfail]
+    mov     rdx, S_CONNFAIL_LEN
+    call    log_err
+    jmp     .error_then_retry
+.fail_req:
+    lea     rcx, [rel s_reqfail]
+    mov     rdx, S_REQFAIL_LEN
+    call    log_err
+    jmp     .error_then_retry
+.fail_send:
+    lea     rcx, [rel s_sendfail]
+    mov     rdx, S_SENDFAIL_LEN
+    call    log_err
+    jmp     .error_then_retry
+.fail_recv:
+    lea     rcx, [rel s_recvfail]
+    mov     rdx, S_RECVFAIL_LEN
+    call    log_err
+    jmp     .error_then_retry
+.fail_status:
+    lea     rcx, [rel s_badstatus]
+    mov     rdx, S_BADSTATUS_LEN
+    call    log_err
+    jmp     .error_then_retry
+.fail_read:
+    lea     rcx, [rel s_readfail]
+    mov     rdx, S_READFAIL_LEN
+    call    log_err
+    jmp     .error_then_retry
+.fail_decode:
+    lea     rcx, [rel s_decodefail]
+    mov     rdx, S_DECODEFAIL_LEN
+    call    log_err
+    jmp     .error_then_retry
+.fail_ovf:
+    lea     rcx, [rel s_ovf]
+    mov     rdx, S_OVF_LEN
+    call    log_err
+.error_then_retry:
+    mov     dword [rel gw_state], GW_TERMINAL
+    jmp     .advance_loop
+
 .out:
-    mov     eax, r13d
-    add     rsp, 136
+    add     rsp, 72
     pop     r15
     pop     r14
     pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; =========================================================================
+; gw_callback - WinHTTP async completion callback.
+; Runs on WinHTTP's internal worker thread. Must be minimal:
+; only write atomic DWORDs, set an event, return immediately.
+;
+; Signature (Win64):
+;   RCX = hInternet (handle)
+;   RDX = dwContext (reserved, 0)
+;   R8  = dwInternetStatus
+;   R9  = lpvStatusInformation
+;   [rbp+48] after prologue = dwStatusInformationLength (bytes for READ_COMPLETE)
+;
+; REQUEST_ERROR lpvStatusInformation layout (x64):
+;   WINHTTP_ASYNC_RESULT { DWORD_PTR dwResult; DWORD dwError; }
+;   dwError is at offset +8 (DWORD_PTR is 8 bytes on x64).
+; =========================================================================
+global gw_callback
+gw_callback:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12                     ; save lpvStatusInformation before any call
+    sub     rsp, 32                 ; shadow space; five pushes leave RSP call-aligned
+
+    mov     ebx, r8d                ; status (non-volatile)
+    mov     r12, r9                 ; lpvStatusInformation (save before any call)
+
+    ; --- READ_COMPLETE: save byte count (5th arg at [rbp+48]) ---
+    cmp     ebx, WINHTTP_CALLBACK_STATUS_READ_COMPLETE
+    jne     .chk_err
+    mov     eax, [rbp+48]
+    mov     [rel gw_read_len], eax
+    jmp     .signal
+
+    ; --- REQUEST_ERROR: save error code ---
+    ; WINHTTP_ASYNC_RESULT on x64: dwResult at +0, dwError at +8
+.chk_err:
+    cmp     ebx, WINHTTP_CALLBACK_STATUS_REQUEST_ERROR
+    jne     .chk_secure
+    test    r12, r12
+    jz      .signal
+    mov     eax, [r12+8]            ; dwError at offset +8 (DWORD_PTR dwResult is 8 bytes)
+    mov     [rel gw_err_code], eax
+    jmp     .signal
+
+    ; --- SECURE_FAILURE: TLS handshake failed — set error and signal ---
+.chk_secure:
+    cmp     ebx, WINHTTP_CALLBACK_STATUS_SECURE_FAILURE
+    jne     .chk_send
+    mov     dword [rel gw_err_code], 1   ; sentinel: TLS failed
+    jmp     .signal
+
+    ; --- SENDREQUEST_COMPLETE / HEADERS_AVAILABLE: signal ---
+.chk_send:
+    cmp     ebx, WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE
+    je      .signal
+    cmp     ebx, WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE
+    je      .signal
+    ; Ignore informational statuses (HANDLE_CREATED, CONNECTING, etc.)
+    jmp     .done
+
+.signal:
+    mov     rcx, [rel gw_event]
+    test    rcx, rcx
+    jz      .done
+    call    SetEvent
+
+.done:
+    add     rsp, 32
     pop     r12
     pop     rdi
     pop     rsi

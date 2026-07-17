@@ -6,6 +6,9 @@
 %include "winsock.inc"
 %include "config.inc"
 
+; --- New includes for async support -----------------------------------------
+%include "engine.inc"
+
 default rel
 
 section .bss
@@ -97,6 +100,48 @@ global gateway_model
 gateway_model:   resb CAP_MODEL
 global gateway_headers_w
 gateway_headers_w: resw CAP_AUTH_WCHARS
+
+; --- Async gateway state machine (added for event-loop rewrite) ------------
+global gw_state
+gw_state:        resd 1               ; GW_* constant from config.inc
+global gw_stage
+gw_stage:        resd 1               ; 0=first solver, 1=checker, 2=final
+global gw_event
+gw_event:        resq 1               ; auto-reset event (signaled by WinHTTP callback)
+global gw_hSession
+gw_hSession:     resq 1               ; WinHTTP session handle (reused across 3 calls)
+global gw_hConnect
+gw_hConnect:     resq 1               ; WinHTTP connection handle (reused)
+global gw_hRequest
+gw_hRequest:     resq 1               ; WinHTTP request handle (new per stage)
+global gw_read_len
+gw_read_len:     resd 1               ; bytes from last READ_COMPLETE callback
+global gw_err_code
+gw_err_code:     resd 1               ; last WinHTTP async error code
+global gw_draft1_len
+gw_draft1_len:   resq 1               ; length of first solver draft in gateway_draft
+global gw_draft2_len
+gw_draft2_len:   resq 1               ; length of checker draft in gateway_draft2
+global gw_user_msg
+gw_user_msg:     resb CAP_CHAT_BODY   ; saved user message (recv_buf may be reused)
+global gw_user_msg_len
+gw_user_msg_len: resq 1
+global gw_model_len
+gw_model_len:    resd 1               ; length of string in gateway_model
+global gw_key_len
+gw_key_len:      resd 1               ; length of string in gateway_api_key
+global gw_headers_len
+gw_headers_len:  resd 1               ; auth-header WCHAR count (for SendRequest)
+global pending_chat_sock
+pending_chat_sock: resq 1             ; client socket awaiting async /chat response
+global pending_req_id
+pending_req_id: resq 1                ; req_id from the originating /chat request
+global pending_req_clen
+pending_req_clen: resq 1              ; req_content_length from the originating /chat request
+global listen_event
+listen_event:    resq 1               ; WSA event for listen_sock (FD_ACCEPT)
+global wsaevents
+wsaevents:       resb WSANETWORKEVENTS_SIZE  ; buffer for WSAEnumNetworkEvents
 
 section .data
 global excl_enable

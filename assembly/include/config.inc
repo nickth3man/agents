@@ -40,4 +40,19 @@
 %define DBG_SEND_CHUNK   13
 %endif
 
+; --- Async gateway state machine values (see engine_gateway.asm) ------------
+%define GW_IDLE            0
+%define GW_OPEN_SESSION    1
+%define GW_OPEN_REQUEST    2
+%define GW_SEND_PENDING    3
+%define GW_RECV_PENDING    4
+%define GW_READ_PENDING    5
+%define GW_DECODE          6
+%define GW_TERMINAL        7
+
+; gateway_advance return values
+%define GW_RET_PROGRESS    0
+%define GW_RET_DONE        200
+%define GW_RET_FAIL        502
+
 %endif ; CONFIG_INC

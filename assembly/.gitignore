@@ -16,3 +16,6 @@ generated/.buildcount
 .DS_Store
 Thumbs.db
 nul
+
+# Deepwork progress files (git-local state, never committed)
+.slim/deepwork/

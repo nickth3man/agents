@@ -34,6 +34,21 @@ extern htons                ; RCX=u_short -> RAX=u_short (network order)
 %define SO_RCVTIMEO         0x1006          ; DWORD ms (5th arg style: via setsockopt)
 %define SO_SNDTIMEO         0x1005          ; DWORD ms
 
+; --- Winsock event objects (async-accept support) -------------------------
+extern WSACreateEvent          ; () -> WSAEVENT
+extern WSAEnumNetworkEvents    ; SOCKET, WSAEVENT, LPWSANETWORKEVENTS -> int
+extern WSAEventSelect          ; SOCKET, WSAEVENT, LONG events -> int
+
+; --- FD_XXX event masks for WSAEventSelect ---------------------------------
+%define FD_ACCEPT           0x0008
+
+; --- WSANETWORKEVENTS struct sizes (for .bss reservation) ------------------
+;   struct { long lNetworkEvents; int iErrorCode[FD_MAX_EVENTS=10]; }
+%define WSANETWORKEVENTS_SIZE 44     ; 4 + 10*4
+
+; --- Error codes -----------------------------------------------------------
+%define WSAEWOULDBLOCK     10035
+
 ; --- Winsock version + sentinels ------------------------------------------
 %define WINSOCK_VER         0x0202          ; MAKEWORD(2,2)
 %define INVALID_SOCKET      0xFFFFFFFFFFFFFFFF

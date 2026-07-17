@@ -15,6 +15,7 @@
 %define HTTP_500   500
 %define HTTP_501   501
 %define HTTP_502   502
+%define HTTP_503   503
 
 ; --- Reader state machine (PLAN §2.4) --------------------------------------
 %define ST_HEADERS    0     ; accumulating until CRLFCRLF

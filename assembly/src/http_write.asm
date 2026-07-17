@@ -49,6 +49,8 @@ r501: db "Not Implemented"
 R501_LEN equ $-r501
 r502: db "Bad Gateway"
 R502_LEN equ $-r502
+r503: db "Service Unavailable"
+R503_LEN equ $-r503
 
 section .text
 
@@ -113,6 +115,12 @@ reason_phrase:
     mov     edx, R502_LEN
     ret
 .n502:
+    cmp     eax, 503
+    jne     .n503
+    lea     rax, [r503]
+    mov     edx, R503_LEN
+    ret
+.n503:
     lea     rax, [r500]
     mov     edx, R500_LEN
     ret

@@ -56,6 +56,7 @@ http_parse:
     sub     rsp, 32                 ; shadow; aligned
     mov     dword [req_has_cl], 0
     mov     dword [req_has_te], 0
+    mov     qword [req_content_length], 0
     ; --- end of request line = first CRLF within [0, header_end) ---
     lea     rcx, [rel recv_buf]
     mov     rdx, [req_header_end]

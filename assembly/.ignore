@@ -1,0 +1,3 @@
+# Allow OpenCode to read deepwork progress files (their parent dir is git-ignored)
+!.slim/deepwork/
+!.slim/deepwork/**

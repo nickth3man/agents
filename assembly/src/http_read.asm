@@ -12,9 +12,14 @@ extern req_header_end
 extern req_has_cl
 extern req_has_te
 extern req_content_length
+extern req_method_ptr
+extern req_method_len
+extern req_path_ptr
+extern req_path_len
 extern mem_find
 extern http_parse
 extern log_err
+extern Sleep
 
 default rel
 
@@ -43,6 +48,13 @@ http_read_request:
     mov     rbx, rcx
     mov     qword [req_used], 0
     mov     qword [req_header_end], 0
+    mov     dword [req_has_cl], 0
+    mov     dword [req_has_te], 0
+    mov     qword [req_content_length], 0
+    mov     qword [req_method_ptr], 0
+    mov     qword [req_method_len], 0
+    mov     qword [req_path_ptr], 0
+    mov     qword [req_path_len], 0
     ; ===================== state: reading headers =====================
 .hdr_loop:
     mov     rax, CAP_REQUEST
@@ -60,7 +72,7 @@ http_read_request:
     add     rdx, [req_used]
     mov     r8,  r12
     xor     r9d, r9d
-    call    recv
+    call    recv_retry
     mov     r12d, eax               ; n (MUST capture immediately; calls clobber eax)
     test    r12d, r12d
     js      .recv_err
@@ -114,7 +126,7 @@ http_read_request:
     add     rdx, [req_used]
     mov     r8,  rax
     xor     r9d, r9d
-    call    recv
+    call    recv_retry
     mov     r11d, eax               ; n
     test    r11d, r11d
     js      .recv_err
@@ -143,6 +155,55 @@ http_read_request:
     mov     eax, HTTP_501
 .out:
     add     rsp, 32
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ===========================================================================
+; recv_retry - recv with WSAEWOULDBLOCK retry loop (non-blocking socket compat).
+; Inputs:  RCX=socket, RDX=buf, R8=len, R9=flags (same as recv).
+; Outputs: RAX = bytes read (positive), 0 (EOF), or -1 (error/timeout).
+; Retries up to ~5000 times with 1ms Sleep between attempts.
+; ===========================================================================
+recv_retry:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx                     ; socket
+    push    r12                     ; retry counter
+    push    r13                     ; buf
+    push    r14                     ; len
+    push    r15                     ; flags
+    sub     rsp, 40                 ; shadow(32)+alignment
+    mov     rbx, rcx
+    mov     r12, 5000
+    mov     r13, rdx
+    mov     r14, r8
+    mov     r15, r9
+.rr_loop:
+    mov     rcx, rbx
+    mov     rdx, r13
+    mov     r8,  r14
+    mov     r9,  r15
+    call    recv
+    test    eax, eax
+    jns     .rr_done
+    ; Error — check for WSAEWOULDBLOCK
+    call    WSAGetLastError
+    cmp     eax, WSAEWOULDBLOCK
+    jne     .rr_error
+    dec     r12
+    jz      .rr_error
+    mov     ecx, 1
+    call    Sleep
+    jmp     .rr_loop
+.rr_error:
+    mov     eax, -1
+.rr_done:
+    add     rsp, 40
+    pop     r15
+    pop     r14
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp

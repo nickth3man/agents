@@ -24,6 +24,8 @@ extern build_id
 extern build_id_len
 extern health_json
 extern health_json_len
+extern gateway_start
+extern gw_state
 
 default rel
 
@@ -208,10 +210,13 @@ route_request:
     lea     rcx, [rel recv_buf]
     add     rcx, [rel req_header_end]        ; msg ptr (two-step: ASLR-safe)
     mov     rdx, [rel req_content_length]    ; msg len
-    call    gateway_generate                 ; rax = 0 ok (resp set) or 502
+    call    gateway_start                    ; async start; returns 0 if accepted
     test    eax, eax
-    jnz     .send_err                        ; gateway failure -> 502
-    mov     eax, HTTP_200
+    jnz     .server_busy                     ; gateway busy → 503
+    ; Gateway started asynchronously. Response will come later when the
+    ; WinHTTP call chain completes. Do NOT set resp_* here — start.asm
+    ; detects gw_state != GW_IDLE and defers the HTTP response.
+    mov     eax, HTTP_200                    ; placeholder; start.asm will NOT send this
     jmp     .rout
     ; ---- 200 responses ----
 .serve_root:
@@ -245,8 +250,12 @@ route_request:
 .meth_not_allowed:
     mov     eax, HTTP_405
     jmp     .send_err
+.server_busy:
+    mov     eax, HTTP_503
+    jmp     .send_err
 .length_required:
     mov     eax, HTTP_411
+    jmp     .send_err
 .send_err:
     lea     rcx, [rel err_body]
     mov     rdx, ERR_BODY_LEN
