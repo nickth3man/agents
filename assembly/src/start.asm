@@ -87,6 +87,21 @@ section .text
     add     r10, rax
 %endmacro
 
+; Reset the parser state owned by a client slot. The socket, lifecycle state,
+; request ID, and deadline are managed separately by the caller.
+%macro clear_slot_request 1
+    mov     qword [%1 + ClientSlot.req_used], 0
+    mov     qword [%1 + ClientSlot.req_header_end], 0
+    mov     dword [%1 + ClientSlot.req_has_cl], 0
+    mov     dword [%1 + ClientSlot.req_has_te], 0
+    mov     qword [%1 + ClientSlot.req_content_length], 0
+    mov     dword [%1 + ClientSlot.req_cl_count], 0
+    mov     qword [%1 + ClientSlot.req_method_ptr], 0
+    mov     qword [%1 + ClientSlot.req_method_len], 0
+    mov     qword [%1 + ClientSlot.req_path_ptr], 0
+    mov     qword [%1 + ClientSlot.req_path_len], 0
+%endmacro
+
 ; ---------------------------------------------------------------------------
 ; start - true OS entry point (never returns).
 ; ---------------------------------------------------------------------------
@@ -221,22 +236,13 @@ start:
     mov     rax, [req_id]
     mov     [r10 + ClientSlot.req_id], rax
 
-    ; zero request-state
-    mov     qword [r10 + ClientSlot.req_used], 0
-    mov     qword [r10 + ClientSlot.req_header_end], 0
-    mov     dword [r10 + ClientSlot.req_has_cl], 0
-    mov     dword [r10 + ClientSlot.req_has_te], 0
-    mov     qword [r10 + ClientSlot.req_content_length], 0
-    mov     dword [r10 + ClientSlot.req_cl_count], 0
-    mov     qword [r10 + ClientSlot.req_method_ptr], 0
-    mov     qword [r10 + ClientSlot.req_method_len], 0
-    mov     qword [r10 + ClientSlot.req_path_ptr], 0
-    mov     qword [r10 + ClientSlot.req_path_len], 0
+    clear_slot_request r10
 
     ; deadline
+    mov     r12, r10                         ; WinAPI calls may clobber r10
     call    GetTickCount64
     add     rax, CLIENT_TIMEOUT_MS
-    mov     [r10 + ClientSlot.deadline_tick], rax
+    mov     [r12 + ClientSlot.deadline_tick], rax
 
     ; clear inherited WSA events, set non-blocking
     mov     rcx, rbx
@@ -603,17 +609,7 @@ free_slot:
 .fs_no_sock:
     mov     qword [rbx + ClientSlot.sock], 0
     mov     dword [rbx + ClientSlot.state], CS_FREE
-    ; zero req fields (not strictly necessary, but hygienic)
-    mov     qword [rbx + ClientSlot.req_used], 0
-    mov     qword [rbx + ClientSlot.req_header_end], 0
-    mov     dword [rbx + ClientSlot.req_has_cl], 0
-    mov     dword [rbx + ClientSlot.req_has_te], 0
-    mov     qword [rbx + ClientSlot.req_content_length], 0
-    mov     dword [rbx + ClientSlot.req_cl_count], 0
-    mov     qword [rbx + ClientSlot.req_method_ptr], 0
-    mov     qword [rbx + ClientSlot.req_method_len], 0
-    mov     qword [rbx + ClientSlot.req_path_ptr], 0
-    mov     qword [rbx + ClientSlot.req_path_len], 0
+    clear_slot_request rbx
 
     add     rsp, 40
     pop     rbx
@@ -698,10 +694,11 @@ scan_timeouts:
     push    rbp
     mov     rbp, rsp
     push    rbx
-    sub     rsp, 40
+    push    r12
+    sub     rsp, 32
 
     call    GetTickCount64
-    mov     r11, rax                         ; now
+    mov     r12, rax                         ; preserved across logging/response calls
 
     xor     ebx, ebx
 .st_loop:
@@ -710,7 +707,7 @@ scan_timeouts:
     cmp     dword [r10 + ClientSlot.state], CS_READING
     jne     .st_next
 
-    cmp     r11, [r10 + ClientSlot.deadline_tick]
+    cmp     r12, [r10 + ClientSlot.deadline_tick]
     jb      .st_next
 
     ; timeout
@@ -727,7 +724,8 @@ scan_timeouts:
     cmp     ebx, MAX_CLIENTS
     jb      .st_loop
 
-    add     rsp, 40
+    add     rsp, 32
+    pop     r12
     pop     rbx
     pop     rbp
     ret

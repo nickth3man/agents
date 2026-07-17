@@ -75,7 +75,7 @@ resp_set_error:
     ret
 
 ; ---------------------------------------------------------------------------
-; path_is_known - 1 if path is /, /version, or /chat, else 0. Returns RAX.
+; path_is_known - 1 if path is /, /version, /health, or /chat. Returns RAX.
 ; Alignment: push rbp + sub 32 -> aligned.
 ; ---------------------------------------------------------------------------
 path_is_known:
@@ -86,13 +86,6 @@ path_is_known:
     mov     rdx, [rel req_path_len]
     lea     r8,  [rel s_root]
     mov     r9,  1
-    call    bytes_eq
-    test    eax, eax
-    jnz     .yes
-    mov     rcx, [rel req_path_ptr]
-    mov     rdx, [rel req_path_len]
-    lea     r8,  [rel s_version]
-    mov     r9,  8
     call    bytes_eq
     test    eax, eax
     jnz     .yes

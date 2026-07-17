@@ -34,6 +34,58 @@ DBG_LEN_LEN equ $-dbg_len
 section .text
 
 ; ---------------------------------------------------------------------------
+; find_header_ci - find a case-insensitive header name at a line boundary.
+; Inputs: RCX=name ptr, RDX=name len, R8=start offset. Returns offset or -1.
+; ---------------------------------------------------------------------------
+find_header_ci:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx                     ; name ptr
+    push    rsi                     ; name len
+    push    r12                     ; search cursor
+    push    r13                     ; header end
+    sub     rsp, 32
+    mov     rbx, rcx
+    mov     rsi, rdx
+    mov     r12, r8
+    mov     r13, [req_header_end]
+.search:
+    cmp     r12, r13
+    jae     .not_found
+    lea     rcx, [rel recv_buf]
+    add     rcx, r12
+    mov     rdx, r13
+    sub     rdx, r12
+    mov     r8, rbx
+    mov     r9, rsi
+    call    mem_find_ci
+    test    rax, rax
+    js      .not_found
+    add     r12, rax
+    cmp     r12, 2
+    jb      .advance
+    lea     r10, [rel recv_buf]
+    cmp     byte [r10 + r12 - 2], CR
+    jne     .advance
+    cmp     byte [r10 + r12 - 1], LF
+    jne     .advance
+    mov     rax, r12
+    jmp     .out
+.advance:
+    inc     r12
+    jmp     .search
+.not_found:
+    mov     rax, -1
+.out:
+    add     rsp, 32
+    pop     r13
+    pop     r12
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---------------------------------------------------------------------------
 ; http_parse - parse a complete request held in recv_buf.
 ; ---------------------------------------------------------------------------
 ; Precondition: req_header_end set (body start / past CRLFCRLF).
@@ -113,12 +165,12 @@ http_parse:
     mov     cl, [rcx]
     cmp     cl, '/'
     jne     .err400
-    ; --- version span = [sp2+1, rli); must start with "HTTP/" ---
+    ; --- version span = [sp2+1, rli); accept exactly HTTP/1.1 ---
     mov     rax, rbx
     sub     rax, r13
     dec     rax                     ; version len
-    cmp     rax, 5
-    jb      .err400
+    cmp     rax, 8
+    jne     .err400
     lea     r10, [rel recv_buf]
     add     r10, r13
     inc     r10                     ; version ptr = recv_buf + sp2 + 1
@@ -137,27 +189,28 @@ http_parse:
     mov     cl, [r10+4]
     cmp     cl, '/'
     jne     .err400
+    mov     cl, [r10+5]
+    cmp     cl, '1'
+    jne     .err400
+    mov     cl, [r10+6]
+    cmp     cl, '.'
+    jne     .err400
+    mov     cl, [r10+7]
+    cmp     cl, '1'
+    jne     .err400
     ; ===================== Content-Length =====================
-    lea     rcx, [rel recv_buf]
-    mov     rdx, [req_header_end]
-    lea     r8,  [cl_name]
-    mov     r9,  CL_NAME_LEN
-    call    mem_find_ci
+    lea     rcx, [cl_name]
+    mov     rdx, CL_NAME_LEN
+    xor     r8d, r8d
+    call    find_header_ci
     test    rax, rax
     js      .check_te
     mov     r15, rax                ; CL header offset
     ; duplicate check: another CL after this header
-    ; duplicate check: another CL after this header
-    ; duplicate check: another CL after this header
-    lea     rcx, [rel recv_buf]
-    add     rcx, r15
-    add     rcx, CL_NAME_LEN        ; hay = recv_buf + cl_off + CL_NAME_LEN
-    mov     rdx, [req_header_end]
-    sub     rdx, r15
-    sub     rdx, CL_NAME_LEN
-    lea     r8,  [cl_name]
-    mov     r9,  CL_NAME_LEN
-    call    mem_find_ci
+    lea     rcx, [cl_name]
+    mov     rdx, CL_NAME_LEN
+    lea     r8, [r15 + CL_NAME_LEN]
+    call    find_header_ci
     test    rax, rax
     jns     .err400                 ; second CL -> 400 (even if equal)
     ; parse value: [r15+CL_NAME_LEN .. CR)
@@ -192,11 +245,10 @@ http_parse:
     mov     [req_content_length], rax
     mov     dword [req_has_cl], 1
 .check_te:
-    lea     rcx, [rel recv_buf]
-    mov     rdx, [req_header_end]
-    lea     r8,  [te_name]
-    mov     r9,  TE_NAME_LEN
-    call    mem_find_ci
+    lea     rcx, [te_name]
+    mov     rdx, TE_NAME_LEN
+    xor     r8d, r8d
+    call    find_header_ci
     test    rax, rax
     js      .framing_done
     mov     dword [req_has_te], 1

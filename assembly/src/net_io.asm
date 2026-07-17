@@ -47,7 +47,7 @@ send_all:
     call    send                 ; eax = bytes sent, or SOCKET_ERROR (-1)
     mov     r10d, eax            ; capture as zero-extended 32-bit
     test    r10d, r10d
-    js      .fail                ; negative -> SOCKET_ERROR
+    jle     .fail                ; error or no forward progress
     ; advance by bytes actually sent
     add     rsi, r10
     sub     r12, r10
