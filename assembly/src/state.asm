@@ -140,6 +140,8 @@ global pending_req_clen
 pending_req_clen: resq 1              ; req_content_length from the originating /chat request
 global listen_event
 listen_event:    resq 1               ; WSA event for listen_sock (FD_ACCEPT)
+global client_event
+client_event:    resq 1               ; WSA event for active client socket (FD_READ|FD_CLOSE)
 global wsaevents
 wsaevents:       resb WSANETWORKEVENTS_SIZE  ; buffer for WSAEnumNetworkEvents
 

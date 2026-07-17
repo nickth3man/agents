@@ -19,6 +19,7 @@ extern connect              ; RCX=sock RDX=&sockaddr R8=len -> RAX=int
 extern recv                 ; RCX=sock RDX=buf R8=len R9=flags -> RAX=int
 extern send                 ; RCX=sock RDX=buf R8=len R9=flags -> RAX=int
 extern closesocket          ; RCX=sock -> RAX=int
+extern ioctlsocket          ; RCX=sock, RDX=cmd (FIONBIO), R8=&u_long arg -> int
 extern shutdown             ; RCX=sock RDX=how -> RAX=int
 extern htons                ; RCX=u_short -> RAX=u_short (network order)
 
@@ -40,7 +41,13 @@ extern WSAEnumNetworkEvents    ; SOCKET, WSAEVENT, LPWSANETWORKEVENTS -> int
 extern WSAEventSelect          ; SOCKET, WSAEVENT, LONG events -> int
 
 ; --- FD_XXX event masks for WSAEventSelect ---------------------------------
+%define FD_READ             0x0001
+%define FD_WRITE            0x0002
 %define FD_ACCEPT           0x0008
+%define FD_CLOSE            0x0020
+
+; --- ioctlsocket commands --------------------------------------------------
+%define FIONBIO             0x8004667E      ; set/clear non-blocking mode
 
 ; --- WSANETWORKEVENTS struct sizes (for .bss reservation) ------------------
 ;   struct { long lNetworkEvents; int iErrorCode[FD_MAX_EVENTS=10]; }
