@@ -19,9 +19,6 @@ wsadata:        resb WSADATA_SIZE        ; WSAStartup output (402 bytes)
 global listen_sock
 listen_sock:    resq 1                   ; listening SOCKET (server)
 
-global client_sock
-client_sock:    resq 1                   ; current accepted SOCKET
-
 global req_id
 req_id:         resq 1                   ; monotonic request counter (for logs)
 
@@ -132,18 +129,16 @@ global gw_key_len
 gw_key_len:      resd 1               ; length of string in gateway_api_key
 global gw_headers_len
 gw_headers_len:  resd 1               ; auth-header WCHAR count (for SendRequest)
-global pending_chat_sock
-pending_chat_sock: resq 1             ; client socket awaiting async /chat response
-global pending_req_id
-pending_req_id: resq 1                ; req_id from the originating /chat request
-global pending_req_clen
-pending_req_clen: resq 1              ; req_content_length from the originating /chat request
 global listen_event
 listen_event:    resq 1               ; WSA event for listen_sock (FD_ACCEPT)
-global client_event
-client_event:    resq 1               ; WSA event for active client socket (FD_READ|FD_CLOSE)
 global wsaevents
 wsaevents:       resb WSANETWORKEVENTS_SIZE  ; buffer for WSAEnumNetworkEvents
+
+; --- Per-slot client state arrays (aligned 16) -----------------------------
+global client_slots
+client_slots:    resb CLIENT_SLOT_SIZE * MAX_CLIENTS  ; aligned 16
+global gw_pending_slot
+gw_pending_slot: resd 1                               ; slot index awaiting /chat response (-1=none)
 
 section .data
 global excl_enable

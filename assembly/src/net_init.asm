@@ -108,9 +108,9 @@ net_init:
     mov     rcx, 1
     call    net_shutdown
 .do_listen:
-    ; --- listen(listen_sock, backlog=16) ---
+    ; --- listen(listen_sock, backlog=64) ---
     mov     rcx, rbx
-    mov     rdx, 16
+    mov     rdx, 64
     call    listen
     test    eax, eax
     jz      .ok

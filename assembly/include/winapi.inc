@@ -25,6 +25,7 @@ extern SetEvent              ; HANDLE -> BOOL
 extern ResetEvent            ; HANDLE -> BOOL
 extern WaitForMultipleObjects  ; DWORD count, HANDLE* handles, BOOL waitAll, DWORD ms -> DWORD
 extern GetLastError          ; () -> DWORD error code
+extern GetTickCount64        ; () -> ULONGLONG
 extern Sleep                 ; DWORD milliseconds -> VOID
 
 ; --- Standard handle pseudo-values (passed to GetStdHandle) ----------------

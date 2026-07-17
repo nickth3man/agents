@@ -16,7 +16,7 @@ extern gateway_start
 ;   Input:  none (works on gw_state globals).
 ;   Output: RAX = 0 if still in progress, 200 on success (resp_* set),
 ;           502 on failure.
-;   After RAX != 0, the caller should http_respond(pending_chat_sock, RAX).
+;   After RAX != 0, the caller should http_respond on gw_pending_slot socket, RAX.
 extern gateway_advance
 
 ; gw_callback - WinHTTP asynchronous status callback.

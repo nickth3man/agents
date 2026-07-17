@@ -55,4 +55,42 @@
 %define GW_RET_DONE        200
 %define GW_RET_FAIL        502
 
+; --- Concurrent client handling (PLAN §2.3, per-slot WFMO) ------------------
+%define MAX_CLIENTS       32
+%define CS_FREE           0
+%define CS_READING        1
+%define CS_CHAT_PENDING   2
+%define CLIENT_TIMEOUT_MS 8000
+
+; --- Per-slot client state (must be 8-byte aligned, TOTAL a multiple of 8) ---
+; Each slot has its own socket, WSA event, deadline, request state, and
+; guard-protected recv_buf.  The global recv_buf / req_* variables serve as
+; the "active slot" scratch — data is copied in before read_more_request /
+; route_request and copied out afterwards via copy_slot_*/copy_globals_*
+; helpers in start.asm.
+struc ClientSlot
+  .sock             resq 1   ; 0
+  .event            resq 1   ; 8
+  .state            resd 1   ; 16 (CS_FREE/CS_READING/CS_CHAT_PENDING)
+  .pad              resd 1   ; 20 (align to 8)
+  .deadline_tick    resq 1   ; 24 (GetTickCount64 + CLIENT_TIMEOUT_MS)
+  .req_id           resq 1   ; 32
+  .req_used         resq 1   ; 40
+  .req_header_end   resq 1   ; 48
+  .req_content_length resq 1 ; 56
+  .req_method_ptr   resq 1   ; 64 (pointer into .recv_buf)
+  .req_method_len   resq 1   ; 72
+  .req_path_ptr     resq 1   ; 80 (pointer into .recv_buf)
+  .req_path_len     resq 1   ; 88
+  .req_has_cl       resd 1   ; 96
+  .req_has_te       resd 1   ; 100
+  .req_cl_count     resd 1   ; 104
+  .pad2             resd 1   ; 108 (align to 8)
+  .guard_lo         resq 1   ; 112
+  .recv_buf         resb CAP_REQUEST  ; 120
+  .guard_hi         resq 1   ; 120 + CAP_REQUEST
+endstruc
+
+CLIENT_SLOT_SIZE equ ClientSlot_size
+
 %endif ; CONFIG_INC
