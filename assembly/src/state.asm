@@ -149,8 +149,23 @@ timeout_ms:     dd 5000                  ; per-client recv/send timeout (ms)
 
 section .text
 
-; Initialize and verify fixed guards around the critical protocol buffers.
-; Both routines are leaf functions and touch no memory outside the guard words.
+; ---------------------------------------------------------------------------
+; debug_canaries_init - write CANARY_VALUE to all canary guard quads.
+; Purpose:        Writes CANARY_VALUE to 8 guard quads (recv_, log_, resp_,
+;                 gateway_ guard_lo/guard_hi) to detect buffer overruns at
+;                 check time. When DEBUG=0, compiles to xor eax,eax; ret
+;                 (no-op). Leaf function.
+; Inputs:         none
+; Outputs:        RAX = 0 (xor eax,eax on all paths)
+; Errors:         none
+; Clobbers:       RAX (only register modified; writes to guard globals)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (all nonvolatile; no pushes)
+; Locals:         0 (leaf; no calls, no frame)
+; Max read:       0 (none; only writes)
+; Max write:      64 bytes to guard globals (8 quads × 8 B; recv_, log_,
+;                 resp_, gateway_ guard_lo/guard_hi; DEBUG=1 only)
+; Precond:        none
+; ---------------------------------------------------------------------------
 global debug_canaries_init
 debug_canaries_init:
 %if DEBUG
@@ -167,6 +182,22 @@ debug_canaries_init:
     xor     eax, eax
     ret
 
+; ---------------------------------------------------------------------------
+; debug_canaries_check - verify all canary guards are intact.
+; Purpose:        Compares all 8 guard quads against CANARY_VALUE. Returns 0
+;                 if all intact, 1 if any corrupted. When DEBUG=0, compiles
+;                 to xor eax,eax; ret (always returns 0). Leaf function.
+; Inputs:         none
+; Outputs:        RAX = 0 (all guards intact, or DEBUG=0), 1 (corruption
+;                 detected; DEBUG=1 only)
+; Errors:         none (RAX=1 signals corruption, not API error)
+; Clobbers:       RAX (only register modified; reads guard globals)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (all nonvolatile; no pushes)
+; Locals:         0 (leaf; no calls, no frame)
+; Max read:       64 bytes from guard globals (8 quads × 8 B; DEBUG=1 only)
+; Max write:      0 (none)
+; Precond:        debug_canaries_init has been called before check (DEBUG=1)
+; ---------------------------------------------------------------------------
 global debug_canaries_check
 debug_canaries_check:
 %if DEBUG

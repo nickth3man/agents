@@ -35,8 +35,23 @@ HTTP11_LEN equ $-http11
 section .text
 
 ; ---------------------------------------------------------------------------
-; find_header_ci - find a case-insensitive header name at a line boundary.
-; Inputs: RCX=name ptr, RDX=name len, R8=start offset. Returns offset or -1.
+; find_header_ci - find a case-insensitive header name at a line boundary
+; Purpose:        Scans the recv_buf from a start offset up to req_header_end,
+;                 looking for a header whose name matches the given string
+;                 case-insensitively. Validates that the match starts at a line
+;                 boundary (preceded by CRLF or at offset 0).
+; Inputs:         RCX=name ptr (u8*), RDX=name len (usize),
+;                 R8=start offset (usize into recv_buf)
+; Outputs:        RAX=offset of match in recv_buf, or -1 if not found
+; Errors:         RAX=-1 sentinel (not found)
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11 (volatile; calls mem_find_ci)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (nonvolatile; RBX=name ptr,
+;                 RSI=name len, R12=cursor, R13=header end)
+; Locals:         32 (shadow only; rbx,rsi,r12,r13 saved via push)
+; Max read:       up to (req_header_end - R8) bytes from [recv_buf + R8],
+;                 bounded by CAP_HEADERS (via mem_find_ci)
+; Max write:      0 (no writes through pointer args)
+; Precond:        req_header_end valid; recv_buf populated; R8 <= req_header_end
 ; ---------------------------------------------------------------------------
 find_header_ci:
     push    rbp
@@ -86,16 +101,43 @@ find_header_ci:
     pop     rbp
     ret
 
-; ---------------------------------------------------------------------------
-; http_parse - parse a complete request held in recv_buf.
-; ---------------------------------------------------------------------------
-; Precondition: req_header_end set (body start / past CRLFCRLF).
-; Inputs:  none (operates on globals).
-; Outputs: RAX = 0 on success, else HTTP status (400/413/501).
-;          Sets method/path spans and Content-Length / Transfer-Encoding flags.
-; Clobbers: volatile + saved rbx,rsi,rdi,r12,r13,r15.
-; Alignment: 7 pushes (rbp,rbx,rsi,rdi,r12,r13,r15) entry≡8 -> ≡0; sub 32 -> ≡0.
-; ---------------------------------------------------------------------------
+; ===========================================================================
+; http_parse - parse complete HTTP request line + framing headers (state machine)
+; Purpose:        Parses the first line (METHOD /path HTTP/1.1) and headers
+;                 (Content-Length, Transfer-Encoding) from recv_buf. Sets
+;                 req_method_ptr/len, req_path_ptr/len, and the content-length/
+;                 transfer-encoding flags. Validates framing rules: no duplicate
+;                 CL, no CL+TE, no TE without CL, body <= CAP_CHAT_BODY.
+; @param[in]      none (operates on recv_buf, req_used, req_header_end globals)
+; @param[out]     RAX - u32 HTTP status: 0=success, >=400=error
+; Inputs:         none; operates on recv_buf, req_header_end, req_used globals
+; Outputs:        RAX = 0 on success, else HTTP error status;
+;                 req_method_ptr/len, req_path_ptr/len, req_content_length,
+;                 req_has_cl, req_has_te globals set
+; Errors:         RAX in {400,413,501} on malformed/oversized request
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15
+; Locals:         32 (shadow only; RBX=rli, RSI=cursor, RDI=value_start,
+;                 R12=sp1, R13=sp2, R15=cl_offset saved via push)
+; Max read:       up to req_header_end (bounded by CAP_HEADERS) bytes from
+;                 [recv_buf] for parsing; CAP_CHAT_BODY from req_content_length
+;                 boundary check; up to CAP_HEADERS via find_header_ci
+; Max write:      0 (writes to req_* globals, not through pointer args)
+; Precond:        req_header_end set to offset past CRLFCRLF; recv_buf
+;                 populated up to req_header_end; req_used valid
+; Stack:          SHADOW 32 + 6 nonvolatile saves (48 bytes),
+;                 RSP 16-aligned at CALL
+; Modified:       RAX,RCX,RDX,R8,R9,R10,R11
+; Initial inputs to registers: none (operates on globals)
+; Register assignments:
+;   method_phase: RCX=recv_buf, RDX=header_end for mem_find(CRLF);
+;                 RBX=rli, R12=sp1, R13=sp2; sets req_method*/req_path*
+;   path_phase:   RCX=req_path_ptr, validates '/'; checks HTTP/1.1 via bytes_eq
+;   headers_phase: RCX=cl_name, RDX=CL_NAME_LEN, R8=0 for find_header_ci;
+;                  R15=CL header offset; RSI=cursor, RDI=value_start for
+;                  parse_u32; then same pattern for TE check
+;   framing_phase: RAX=content_length vs CAP_CHAT_BODY; RAX=0 or HTTP error
+; ===========================================================================
 global http_parse
 http_parse:
     push    rbp

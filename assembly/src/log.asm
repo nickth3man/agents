@@ -49,9 +49,18 @@ section .text
 
 ; ---------------------------------------------------------------------------
 ; log_str - write a counted string to stderr (no formatting).
-; Inputs:  RCX = buf ptr, RDX = len.
-; Clobbers: volatile.  Preserves: nonvolatile.
-; Alignment: push rbp/rbx/rsi (entry≡8 -> ≡0); sub 48 -> ≡0. OK.
+; Purpose:        Writes RDX bytes from [RCX] to stderr via WriteFile. Used by
+;                 all log emission paths.
+; Inputs:         RCX=u8* buf ptr, RDX=usize len (bytes to write)
+; Outputs:        RAX=WriteFile return (BOOL; non-zero=success, 0=failure);
+;                 side effect: writes to stderr, updates [log_written]
+; Errors:         none (caller ignores log failures by convention)
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11 (volatile via Win32 calls)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (all nonvolatile; rbx,rsi,rbp saved)
+; Locals:         48 (32 shadow + 16 for 5th arg lpOverlapped; hand-rolled)
+; Max read:       RDX bytes from [RCX]
+; Max write:      4 bytes to [log_written] (DWORD from WriteFile)
+; Precond:        RCX valid for RDX bytes; RDX may be 0 (no-op)
 ; ---------------------------------------------------------------------------
 global log_str
 log_str:
@@ -82,10 +91,23 @@ log_str:
 
 ; ---------------------------------------------------------------------------
 ; _emit_err_line - build "[error] stage=<stage> wsa=<code>\n" + emit.
-; Inputs:  RCX = stage ptr, RDX = stage len, R8 = numeric code.
-; Clobbers: volatile + saved nonvolatile (rbx,rsi,r12,r13,r14).
-; Alignment: 6 pushes (rbp,rbx,rsi,r12,r13,r14) from entry≡8 -> rsp≡0;
-;           sub 32 -> ≡0. OK.
+; Purpose:        Formats an error line into log_scratch, then emits via
+;                 log_str. Used by log_err and log_err_code.
+; Inputs:         RCX=u8* stage ptr, RDX=usize stage len, R8=u32 code
+; Outputs:        RAX=log_str return (WriteFile BOOL); side effect: error line
+;                 written to stderr via log_str
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11 (volatile via copy_bytes,
+;                 u32_to_dec, log_str)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (all nonvolatile; rbx,rsi,r12,r13,
+;                 r14,rbp saved via push/pop)
+; Locals:         32 (shadow only; 6 pushes via hand-rolled frame)
+; Max read:       RDX bytes from [RCX] (stage string); fixed constants from
+;                 err_pfx, err_mid, err_nl
+; Max write:      CAP_LOG_LINE bytes to [log_scratch] (no runtime clamp;
+;                 caller must ensure total fits within buffer)
+; Precond:        RCX valid for RDX bytes; R8 contains valid u32; total
+;                 formatted line must fit in CAP_LOG_LINE bytes
 ; ---------------------------------------------------------------------------
 _emit_err_line:
     push    rbp
@@ -147,10 +169,22 @@ _emit_err_line:
 
 ; ---------------------------------------------------------------------------
 ; log_err - capture WSAGetLastError THEN emit. Use for all socket-call errors.
-; Inputs:  RCX = stage ptr, RDX = stage len.
-; IMPORTANT (PLAN §7.5): call IMMEDIATELY after the failing socket call.
-; Clobbers: volatile + saved nonvolatile.
-; Alignment: 4 pushes (rbp,rbx,rsi,r12) from entry≡8 -> ≡0; sub 32 -> ≡0. OK.
+; Purpose:        Calls WSAGetLastError, saves result to [last_wsa], then
+;                 forwards to _emit_err_line with the error code. Must be
+;                 called immediately after the failing socket call (PLAN §7.5).
+; Inputs:         RCX=u8* stage ptr, RDX=usize stage len
+; Outputs:        RAX=_emit_err_line return (WriteFile BOOL); side effect:
+;                 [last_wsa] updated, error line emitted to stderr
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11 (volatile via WSAGetLastError and
+;                 _emit_err_line)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (all nonvolatile; rbx,rsi,r12,rbp
+;                 saved via push/pop)
+; Locals:         32 (shadow only; 4 pushes via hand-rolled frame)
+; Max read:       RDX bytes from [RCX] (stage string, forwarded)
+; Max write:      4 bytes to [last_wsa] (WSA error code); plus CAP_LOG_LINE
+;                 bytes to [log_scratch] via _emit_err_line
+; Precond:        Call immediately after failing WSA call; RCX valid for RDX bytes
 ; ---------------------------------------------------------------------------
 global log_err
 log_err:
@@ -178,13 +212,23 @@ log_err:
 
 ; ---------------------------------------------------------------------------
 ; log_err_code - emit with an EXPLICIT code (WSAStartup special case, PLAN §4.4).
-; Inputs:  RCX = stage ptr, RDX = stage len, R8 = code (the API's return value).
-; Clobbers: volatile.
-; Alignment: tail-style: just set up rcx/rdx/r8 and call _emit_err_line. The
-;           CALL to _emit_err_line needs rsp aligned; we have not modified rsp
-;           since entry, and entry≡8 (caller's responsibility was to align at
-;           the call to US). We pass through unchanged. OK as long as caller
-;           aligned at its call to log_err_code (which it did).
+; Purpose:        Thin tail-jump wrapper to _emit_err_line. Forwards all three
+;                 register args unchanged. 2-line leaf — no frame, no shadow.
+;                 Unlike log_err, does NOT call WSAGetLastError; the caller
+;                 provides the code explicitly in R8.
+; Inputs:         RCX=u8* stage ptr, RDX=usize stage len, R8=u32 code
+; Outputs:        RAX=_emit_err_line return (WriteFile BOOL); side effect:
+;                 error line emitted to stderr
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11 (volatile; same as _emit_err_line
+;                 which performs all work)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (all nonvolatile; no frame, no
+;                 push/pop in this wrapper; _emit_err_line preserves them)
+; Locals:         0 (leaf tail-jump; no CALL, no sub rsp, no frame)
+; Max read:       RDX bytes from [RCX] (stage string, forwarded)
+; Max write:      CAP_LOG_LINE bytes to [log_scratch] via _emit_err_line
+; Precond:        R8 contains explicit error code (not WSAGetLastError); same
+;                 preconditions as _emit_err_line apply
 ; ---------------------------------------------------------------------------
 global log_err_code
 log_err_code:
@@ -192,12 +236,27 @@ log_err_code:
 
 ; ---------------------------------------------------------------------------
 ; log_request - emit "[request] id=N method=M path=P status=S in=I out=O\n"
-; ---------------------------------------------------------------------------
-; Inputs:  RCX = status code, RDX = response bytes sent (out).
-; Reads globals: req_id, req_method_ptr/len, req_path_ptr/len, req_content_length.
-; The line is built in log_scratch and truncated (path/method) at CAP_LOG_LINE.
-; Clobbers: volatile + saved rbx,rsi,r12,r13,r14,r15.
-; Alignment: 7 pushes (rbp,rbx,rsi,r12,r13,r14,r15) entry≡8 -> ≡0; sub 32 -> ≡0.
+; Purpose:        Builds a structured request log line in log_scratch from
+;                 globals (req_id, req_method_*, req_path_*, req_content_length)
+;                 and register args (status, out bytes). Method and path are
+;                 clamped to remaining scratch capacity. Emits via log_str.
+; Inputs:         RCX=u32 status (HTTP status code), RDX=u64 out_bytes
+;                 (response bytes sent). Reads req_* globals.
+; Outputs:        RAX=log_str return (WriteFile BOOL); side effect: request
+;                 log line emitted to stderr
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11 (volatile via copy_bytes,
+;                 u32_to_dec, log_str)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (all nonvolatile; rbx,rsi,r12,r13,
+;                 r14,r15,rbp saved via push/pop)
+; Locals:         32 (shadow only; 7 pushes via hand-rolled frame)
+; Max read:       req_method_len bytes from [req_method_ptr]; req_path_len
+;                 bytes from [req_path_ptr]; req_id (8 B), req_content_length
+;                 (8 B) from globals
+; Max write:      CAP_LOG_LINE bytes to [log_scratch] (method/path clamped to
+;                 remaining capacity)
+; Precond:        req_* globals populated by http_read/http_parse; RCX, RDX
+;                 carry caller's status/byte count
 ; ---------------------------------------------------------------------------
 global log_request
 log_request:

@@ -22,6 +22,12 @@ Preflight verifies NASM, curl, and the linker. Builds publish `out\current\chat-
 
 Use four-space indentation and align assembly operands and comments consistently with nearby code. Name exported routines and state in `snake_case`, local labels as `.descriptive_label`, and constants in `UPPER_SNAKE_CASE`. Every module uses `default rel`; never write `[label + register]` because GoLink cannot relocate that form safely. Follow the Win64 ABI rules in `include/win64.inc`: reserve shadow space, align `RSP` before calls, preserve nonvolatile registers, and document callable routines with inputs, outputs, clobbers, and bounds. No automated formatter or linter is configured.
 
+## Annotation Standard
+
+Assembly has no native type-hint or docstring feature, so the project codifies a 3-tier comment convention plus NASM-enforced syntax rules that together provide the safety and toolability that type hints give in higher-level languages. The authoritative reference is `docs/annotation-standard.md`; the condensed template lives at the top of `include/win64.inc`; the per-function classification lives in `docs/annotation-ledger.md`. The research justification lives in `docs/assembly-annotation-research.md`.
+
+Every label that is the target of a `call` or declared `global` must carry at minimum a Tier 1 inline register contract (`; RCX=..., ret RAX=...`). Non-leaf routines, routines over ~20 lines, and routines touching buffers via pointer args require the Tier 2 structured 7-field header (`Inputs`/`Outputs`/`Errors`/`Clobbers`/`Preserves`/`Locals`/`Max read`/`Max write`, plus optional `Precond`). Public externs, state machines, and security-critical paths (`read_more_request`, `http_parse`, `route_request`, `gateway_*`, `ClientSlot` helpers, network I/O) require Tier 3: Tier 2 plus Doxygen `@param[in]`/`@param[out]` tags and optional `Stack`/`Modified`/`Register assignments` fields. When a routine's register usage changes, update its contract in the same commit.
+
 ## Testing Guidelines
 
 `scripts/test.ps1` is the protocol test harness, using `curl.exe` and `TcpClient`. Add focused `Check` cases for route, framing, timeout, concurrency, and error-path changes. Run `-All` before committing; use `-Gateway` separately when live OpenRouter credentials are available. No coverage threshold is defined.

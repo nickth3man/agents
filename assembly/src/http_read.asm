@@ -26,24 +26,43 @@ S_RECVREAD_LEN equ $-s_recvread
 section .text
 
 ; ===========================================================================
-; read_more_request - event-loop incremental request reader.
-; Does ONE non-blocking recv, accumulates into recv_buf, checks for complete
-; request (CRLFCRLF headers + optional Content-Length body). Returns to the
-; event loop if WSAEWOULDBLOCK — never retries with Sleep.
-;
-; The caller (start.asm event loop) must call WSAEnumNetworkEvents after
-; this returns, to reset the level-triggered WSA event and to detect FD_CLOSE.
-;
-; Inputs:   RCX = client socket.
-; Precond:  req_used / req_header_end reflect current accumulation.
-; Outputs:  RAX = 0  (request complete — route it).
-;               = 1  (more data needed — recv returned bytes but request
-;                     not yet complete; level-triggered event stays signaled
-;                     for subsequent WFMO wake).
-;               = 2  (WSAEWOULDBLOCK — no more data right now; caller should
-;                     WSAEnumNetworkEvents + return to event loop).
-;              >= 400 (HTTP error — clean up and respond).
-; Preserves: non-volatile.
+; read_more_request - incremental non-blocking request reader (state machine)
+; Purpose:        Does ONE non-blocking recv into recv_buf, accumulates bytes
+;                 into [recv_buf+req_used], detects CRLFCRLF header terminator,
+;                 transitions through ST_HEADERS → ST_BODY → ST_COMPLETE, and
+;                 enforces CAP_REQUEST/CAP_HEADERS. Never retries with Sleep.
+;                 Caller must WSAEnumNetworkEvents after return to reset the
+;                 level-triggered event and detect FD_CLOSE.
+; @param[in]      RCX - SOCKET client socket (valid, non-zero)
+; @param[out]     RAX - u32 result: 0=complete, 1=more, 2=wouldblock, >=400 err
+; Inputs:         RCX = client socket (SOCKET)
+; Precond:        req_used, req_header_end reflect current accumulation;
+;                 recv_buf valid for CAP_REQUEST bytes
+; Outputs:        RAX = 0 (request complete — route it)
+;                       1 (more data needed — recv returned bytes but request
+;                          not yet complete; level-triggered event stays
+;                          signaled for subsequent WFMO wake)
+;                       2 (WSAEWOULDBLOCK — no more data right now; caller
+;                          should WSAEnumNetworkEvents + return to event loop)
+;                  >= 400 (HTTP error — clean up and respond)
+; Errors:         RAX in {400,413,431,501} on protocol/recv error
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15
+; Locals:         32 (shadow only; RBX=socket, RSI=n saved via push,
+;                 frame via push rbp + mov rbp,rsp + sub 32)
+; Max read:       (CAP_REQUEST - req_used) bytes via recv into
+;                 [recv_buf + req_used]; up to req_used bytes via mem_find
+; Max write:      (CAP_REQUEST - req_used) bytes into recv_buf
+; Stack:          SHADOW 32 + 2 pushes (RBX,RSI), RSP 16-aligned at CALL
+; Modified:       RAX,RCX,RDX,R8,R9,R10,R11
+; Initial inputs to registers: socket->RCX
+; Register assignments:
+;   recv_phase:   RBX=socket, RCX=socket, RDX=recv_buf+offset,
+;                 R8=remaining, R9=0; RSI=recv result after WSARecv
+;   scan_phase:   RCX=recv_buf, RDX=req_used, R8=crlfcrlf, R9=4;
+;                 RAX=offset from mem_find
+;   boundary_phase: RAX=expected_total, compare to req_used;
+;                   RAX=0/1/>=400 result
 ; ===========================================================================
 global read_more_request
 read_more_request:

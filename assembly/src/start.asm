@@ -102,9 +102,60 @@ section .text
     mov     qword [%1 + ClientSlot.req_path_len], 0
 %endmacro
 
-; ---------------------------------------------------------------------------
-; start - true OS entry point (never returns).
-; ---------------------------------------------------------------------------
+; ===========================================================================
+; start - true OS entry point, Winsock event loop, request lifecycle manager
+; Purpose:        Initializes Winsock, creates the listening socket and gateway
+;                 completion events, then enters an infinite event loop. Each
+;                 iteration: (1) waits on listen/gateway handles with a 100 ms
+;                 poll interval when any client is READING; (2) accepts new
+;                 connections into free ClientSlots; (3) polls all READING slots
+;                 via non-blocking recv through read_more_request; (4) dispatches
+;                 complete requests through route_request (synchronous respond
+;                 or async gateway deferral to /chat); (5) handles gateway
+;                 completion events with http_respond + log_request; (6) scans
+;                 and expires timed-out slots via error_and_free_slot.
+;                 Fatal WSAEnumNetworkEvents failure terminates via ud2.
+; @param[in]      none — process entry point, no register arguments
+; @param[out]     never returns; fatal path invokes ud2 after net_shutdown(1)
+; Inputs:         none (process entry point — CRT or loader has zeroed .bss)
+; Outputs:        never returns (infinite event loop); fatal: ud2
+; Errors:         ud2 on WSAEnumNetworkEvents failure (log_err + net_shutdown)
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11 (volatile) + nonvolatile RBX,R12
+;                 (used without save/restore — entry point has no caller)
+; Preserves:      none (process entry point, never returns to caller)
+; Locals:         128 bytes (scratch workspace via sub rsp,128; no PROLOGUE)
+; Max read:       MAX_CLIENTS * CLIENT_SLOT_SIZE from client_slots[] array;
+;                 CAP_REQUEST per READING slot via slot_to_globals recv_buf copy
+;                 (≤ MAX_CLIENTS * CAP_REQUEST per full poll round)
+; Max write:      CAP_REQUEST per READING slot via globals_to_slot recv_buf copy
+;                 (≤ MAX_CLIENTS * CAP_REQUEST per full poll round); all
+;                 ClientSlot scalar fields (sock,state,deadline,req_*);
+;                 global req_* variables; fionbio_arg; canary guards
+; Precond:        .bss zeroed by loader; RSP valid (standard CRT-less process
+;                 startup); Winsock not yet initialized; no ClientSlots in use
+; Stack:          128-byte scratch at [rsp+0..127]; RSP 16-aligned at entry via
+;                 "and rsp,-16"; no frame pointer (RBP not used);
+;                 [rsp+32]=WFMO handles (listen_event, gw_event),
+;                 [rsp+48]=WFMO timeout, [rsp+50h]=poll-result/route-status,
+;                 [rsp+58h]=gw_state snapshot (pre-route)
+; Modified:       RAX,RCX,RDX,R8,R9,R10,R11,RBX,R12
+; Initial inputs to registers: none (process entry point)
+; Register assignments:
+;   init_phase:     RAX=WSA/CreateEvent returns, RCX=call-args,
+;                   RDX=call-args, R8=call-args, R9=call-args,
+;                   ECX=slot-index (.init_slots), R10=slot-addr
+;   poll_phase:     RAX=WFMO-result, RSP+32=WFMO-handles,
+;                   RSP+48=timeout (INFINITE/100),
+;                   ECX=slot-index (.tmo_scan), R10=slot-addr
+;   accept_phase:   RBX=new-socket, ECX=slot-index (.find_slot),
+;                   R10=slot-addr, R12=slot-addr (across GetTickCount64)
+;   dispatch_phase: [poll_slot_idx]=slot-index, R10=slot-addr,
+;                   [rsp+50h]=poll-result/route-status,
+;                   [rsp+58h]=gw-snapshot,
+;                   RAX=read_more_request/route_request/canary results
+;   gateway_phase:  ECX=[gw_pending_slot], R10=slot-addr,
+;                   EDX=gw_status, [gw_status]=persisted gateway return
+; ===========================================================================
 global start
 start:
     and     rsp, -16
@@ -420,11 +471,23 @@ start:
 ;  HELPERS
 ; ======================================================================
 
-; -----------------------------------------------------------------------
-; slot_to_globals(ecx = slot index)
-; Copy slot.recv_buf → global recv_buf and slot.req_* → global req_*,
-; adjusting pointer fields from slot-space to global-space.
-; -----------------------------------------------------------------------
+; ---------------------------------------------------------------------------
+; slot_to_globals - copy slot recv_buf/req_* into global recv_buf/req_*
+; Purpose:        Copies the recv_buf content and all req_* fields from a
+;                 ClientSlot to the global scratch area, translating pointer
+;                 field offsets from slot-relative to global-relative. Called
+;                 before read_more_request so the reader operates on globals.
+; Inputs:         ECX = slot index (u32, 0..MAX_CLIENTS-1)
+; Outputs:        Global recv_buf, req_used, req_header_end, req_content_length,
+;                 req_has_cl, req_has_te, req_cl_count, req_method_len,
+;                 req_path_len, req_method_ptr, req_path_ptr updated from slot.
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R10,RSI,RDI  (RSI,RDI nonvolatile — destroyed by rep movsb)
+; Preserves:      RBX,RBP,R12-R15
+; Locals:         32 (shadow only; RBX saved via push, frame via push rbp/mov rbp,rsp)
+; Max read:       [r10+ClientSlot.req_used] bytes from [r10+ClientSlot.recv_buf] (≤ CAP_REQUEST)
+; Max write:      [r10+ClientSlot.req_used] bytes to [recv_buf] (≤ CAP_REQUEST)
+; ---------------------------------------------------------------------------
 slot_to_globals:
     push    rbp
     mov     rbp, rsp
@@ -493,10 +556,21 @@ slot_to_globals:
     pop     rbp
     ret
 
-; -----------------------------------------------------------------------
-; globals_to_slot(ecx = slot index)
-; Reverse of slot_to_globals: copy global → slot, adjust pointers back.
-; -----------------------------------------------------------------------
+; ---------------------------------------------------------------------------
+; globals_to_slot - copy global recv_buf/req_* back into slot, adjusting pointers
+; Purpose:        Reverse of slot_to_globals. Copies the global recv_buf and all
+;                 req_* fields back into a ClientSlot, translating pointer field
+;                 offsets from global-relative back to slot-relative. Called after
+;                 read_more_request to persist any state changes.
+; Inputs:         ECX = slot index (u32, 0..MAX_CLIENTS-1)
+; Outputs:        Slot recv_buf and req_* fields updated from globals.
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R10,RSI,RDI  (RSI,RDI nonvolatile — destroyed by rep movsb)
+; Preserves:      RBX,RBP,R12-R15
+; Locals:         32 (shadow only; RBX saved via push, frame via push rbp/mov rbp,rsp)
+; Max read:       [req_used] bytes from [recv_buf] via rep movsb (≤ CAP_REQUEST)
+; Max write:      [req_used] bytes to [r10+ClientSlot.recv_buf] (≤ CAP_REQUEST)
+; ---------------------------------------------------------------------------
 globals_to_slot:
     push    rbp
     mov     rbp, rsp
@@ -565,11 +639,21 @@ globals_to_slot:
     pop     rbp
     ret
 
-; -----------------------------------------------------------------------
-; disassociate_slot(ecx = slot index)
-; Clear WSAEventSelect on slot's socket and restore blocking mode.
-; Does NOT close socket or change state.
-; -----------------------------------------------------------------------
+; ---------------------------------------------------------------------------
+; disassociate_slot - clear WSAEventSelect on slot's socket, restore blocking mode
+; Purpose:        Removes WSAEventSelect from the slot's socket and sets the
+;                 socket back to blocking mode via ioctlsocket(FIONBIO,0).
+;                 Does NOT close the socket or change the slot's state.
+;                 Safe to call when sock == 0 (no-op).
+; Inputs:         ECX = slot index (u32, 0..MAX_CLIENTS-1)
+; Outputs:        Slot socket WSA events cleared, blocking mode restored.
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11  (calls WSAEventSelect, ioctlsocket)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15
+; Locals:         40 (32 shadow + 8 padding; RBX saved via push, frame via push rbp/mov rbp,rsp)
+; Max read:       8 bytes from slot.sock (qword read)
+; Max write:      4 bytes to [fionbio_arg] (dword write to .bss)
+; ---------------------------------------------------------------------------
 disassociate_slot:
     push    rbp
     mov     rbp, rsp
@@ -595,10 +679,20 @@ disassociate_slot:
     pop     rbp
     ret
 
-; -----------------------------------------------------------------------
-; free_slot(ecx = slot index)
-; shutdown + closesocket + zero fields + state = FREE.
-; -----------------------------------------------------------------------
+; ---------------------------------------------------------------------------
+; free_slot - shutdown + closesocket + zero fields + state = FREE
+; Purpose:        Gracefully shuts down the socket (SD_SEND), closes it, zeros
+;                 all slot fields via clear_slot_request, and sets the slot state
+;                 to CS_FREE. Handles sock == 0 gracefully (no-op on socket ops).
+; Inputs:         ECX = slot index (u32, 0..MAX_CLIENTS-1)
+; Outputs:        Slot sock=0, state=CS_FREE, all req_* fields zeroed.
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11  (calls shutdown, closesocket)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15
+; Locals:         40 (32 shadow + 8 padding; RBX saved via push, frame via push rbp/mov rbp,rsp)
+; Max read:       8 bytes from slot.sock (qword read)
+; Max write:      ClientSlot.sock/state zeroed, all req_* fields zeroed via clear_slot_request
+; ---------------------------------------------------------------------------
 free_slot:
     push    rbp
     mov     rbp, rsp
@@ -624,10 +718,20 @@ free_slot:
     pop     rbp
     ret
 
-; -----------------------------------------------------------------------
-; respond_and_free_slot(ecx = slot index, edx = HTTP status)
-; http_respond + log_request + free_slot.
-; -----------------------------------------------------------------------
+; ---------------------------------------------------------------------------
+; respond_and_free_slot - http_respond + log_request + free_slot
+; Purpose:        Convenience helper that sends an HTTP response for the slot's
+;                 socket, logs the request, then frees the slot. Used after
+;                 synchronous (non-gateway) route completion.
+; Inputs:         ECX = slot index (u32, 0..MAX_CLIENTS-1), EDX = HTTP status (u16)
+; Outputs:        HTTP response sent; slot freed (sock closed, state=CS_FREE).
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11  (calls http_respond, log_request, free_slot)
+; Preserves:      RBX,RBP,R12,RDI,RSI,R13-R15
+; Locals:         32 (shadow only; RBX and R12 saved via push, frame via push rbp/mov rbp,rsp)
+; Max read:       8 bytes from slot.sock, 8 bytes from [resp_body_len]
+; Max write:      0
+; ---------------------------------------------------------------------------
 respond_and_free_slot:
     push    rbp
     mov     rbp, rsp
@@ -656,10 +760,23 @@ respond_and_free_slot:
     pop     rbp
     ret
 
-; -----------------------------------------------------------------------
-; error_and_free_slot(ecx = slot index, eax = HTTP status)
-; disassociate + resp_set_error + http_respond + log_request + free_slot.
-; -----------------------------------------------------------------------
+; ---------------------------------------------------------------------------
+; error_and_free_slot - disassociate + resp_set_error + http_respond + log_request + free_slot
+; Purpose:        Complete error-response sequence. Disassociates WSA events
+;                 from the slot's socket, sets the error response globals via
+;                 resp_set_error, sends the HTTP response, logs the request,
+;                 then frees the slot. Called when read_more_request returns
+;                 >= 400 or on canary check failure.
+; Inputs:         ECX = slot index (u32, 0..MAX_CLIENTS-1), EAX = HTTP status (u16)
+; Outputs:        Error response sent; slot freed.
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11  (calls disassociate_slot, resp_set_error,
+;                                              http_respond, log_request, free_slot)
+; Preserves:      RBX,RBP,R12,RDI,RSI,R13-R15
+; Locals:         32 (shadow only; RBX and R12 saved via push, frame via push rbp/mov rbp,rsp)
+; Max read:       8 bytes from slot.sock, 8 bytes from [resp_body_len]
+; Max write:      0
+; ---------------------------------------------------------------------------
 error_and_free_slot:
     push    rbp
     mov     rbp, rsp
@@ -695,9 +812,23 @@ error_and_free_slot:
     pop     rbp
     ret
 
-; -----------------------------------------------------------------------
-; scan_timeouts - iterate READING slots; respond 400 on deadline expiry.
-; -----------------------------------------------------------------------
+; ---------------------------------------------------------------------------
+; scan_timeouts - iterate READING slots; respond 400 on deadline expiry
+; Purpose:        Scans all MAX_CLIENTS slots for CS_READING state and expired
+;                 deadlines. For each timed-out slot, logs "client timeout"
+;                 then calls error_and_free_slot with HTTP_400. Called once
+;                 per poll iteration after the slot scan loop.
+; Inputs:         none (operates on global client_slots array and constants)
+; Outputs:        Timed-out slots are freed via error_and_free_slot.
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11  (calls GetTickCount64, log_err,
+;                                              error_and_free_slot)
+; Preserves:      RBX,RBP,R12,RDI,RSI,R13-R15
+; Locals:         32 (shadow only; RBX and R12 saved via push, frame via push rbp/mov rbp,rsp)
+; Max read:       S_CLIENT_TIMEOUT_LEN bytes from [s_client_timeout];
+;                 slot.state and slot.deadline_tick per slot examined
+; Max write:      0 (writes go to freed slot via error_and_free_slot, not directly)
+; ---------------------------------------------------------------------------
 scan_timeouts:
     push    rbp
     mov     rbp, rsp

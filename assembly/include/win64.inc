@@ -34,7 +34,8 @@
 ;      Plain `[label]` (no index) is fine under `default rel`.
 ;
 ; ---------------------------------------------------------------------------
-; Contract-comment template (paste at top of every callable routine):
+; Contract-comment template (Tier 2 baseline — paste at top of every
+; non-leaf / >20-line / buffer-touching callable routine):
 ; ---------------------------------------------------------------------------
 ;   ; fn_name -
 ;   ; Purpose:
@@ -45,6 +46,27 @@
 ;   ; Preserves:     RBX,RBP,RDI,RSI,R12-R15     (nonvolatile)
 ;   ; Locals:        N bytes
 ;   ; Max read:      M bytes   Max write: W bytes
+;   ; Precond:       <optional; caller obligations>
+; ---------------------------------------------------------------------------
+; Annotation tiers (condensed — full rules in docs/annotation-standard.md):
+; ---------------------------------------------------------------------------
+; Tier 1 - Minimal inline (ALL callable labels, including tiny leaves):
+;   ; <one-line purpose>
+;   ; RCX=..., RDX=..., R8=..., R9=..., ret RAX=...
+;   ; Clobbers: volatile   Preserves: nonvolatile   ; (elide only if obvious leaf)
+;
+; Tier 2 - Structured header (non-leaf, OR >20 lines, OR touches buffers):
+;   Paste the Tier 2 template above verbatim. Add `Precond:` when callers owe
+;   obligations (alignment, non-null, state, no overlap). `---` separator.
+;
+; Tier 3 - Strict contract (public externs, state machines, security-critical):
+;   Tier 2 + Doxygen `@param[in]`/`@param[out]` tags + optional fields:
+;     Stack:, Modified:, Initial inputs to registers:, Register assignments.
+;   `===` separator (79 chars) distinguishes Tier 3 from Tier 2.
+;
+; Decision flowchart: docs/annotation-standard.md §7.
+; Worked examples (same fn at all 3 tiers): docs/annotation-standard.md §8.
+; Per-function tier classification: docs/annotation-ledger.md.
 ; ---------------------------------------------------------------------------
 
 %ifndef WIN64_INC

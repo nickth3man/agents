@@ -12,13 +12,19 @@ default rel
 section .text
 
 ; ---------------------------------------------------------------------------
-; u32_to_dec - format a 32-bit unsigned integer as ASCII decimal.
-; ---------------------------------------------------------------------------
-; Inputs:  ECX = value (unsigned 32-bit), RDX = out buffer ptr,
-;          R8  = buffer capacity (bytes).
-; Outputs: RAX = bytes written (0 on capacity error; nothing written).
-; Clobbers: RAX,RCX,RDX,R8,R9,R10,R11.  Preserves: RBX,RSI (saved).
-; Max write: up to 10 bytes into [RDX..RDX+len).
+; u32_to_dec - format a 32-bit unsigned integer as ASCII decimal
+; Purpose:        Converts an unsigned 32-bit integer to its decimal ASCII
+;                 representation at [RDX]. Returns bytes written, or 0 if the
+;                 buffer is too small. Leaf (no API calls).
+; Inputs:         ECX=value (u32), RDX=out buffer ptr (u8*),
+;                 R8=buffer capacity (usize)
+; Outputs:        RAX=bytes written (usize), or 0 on capacity error
+; Errors:         RAX=0 on buffer too small (R8 < digit count)
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11 (volatile)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (nonvolatile; RBX=out ptr,
+;                 RSI=cursor saved via push)
+; Locals:         32 (digit scratch buffer; leaf, no shadow)
+; Max read:       0   Max write: up to 10 bytes to [RDX] (checked vs R8)
 ; ---------------------------------------------------------------------------
 global u32_to_dec
 u32_to_dec:
@@ -81,13 +87,20 @@ u32_to_dec:
     ret
 
 ; ---------------------------------------------------------------------------
-; parse_u32 - parse an unsigned decimal ASCII span into a 32-bit value.
-; ---------------------------------------------------------------------------
-; Inputs:  RCX = ptr, RDX = len (>=1).
-; Outputs: RAX = value (<= 0xFFFFFFFF on success); CF set on error.
-; Errors:  empty span, >10 digits, non-digit byte, or value > 0xFFFFFFFF.
-; Clobbers: RAX,RCX,RDX,R8,R9.  Preserves: RBX,RSI,RBP (saved).
-; Leaf (no calls).
+; parse_u32 - parse an unsigned decimal ASCII span into a 32-bit value
+; Purpose:        Parses a decimal ASCII string of length RDX at [RCX] into
+;                 a 32-bit unsigned integer. Rejects empty strings, strings
+;                 longer than 10 digits, non-digit characters, and values
+;                 exceeding 0xFFFFFFFF. Leaf (no API calls).
+; Inputs:         RCX=ptr to ASCII decimal string (u8*), RDX=len (usize, >=1)
+; Outputs:        RAX=parsed value (u32) on success; CF=0 on success, CF=1 on error
+; Errors:         CF=1 on empty span, >10 digits, non-digit byte, or
+;                 value > 0xFFFFFFFF
+; Clobbers:       RAX,RCX,R8,R9 (volatile)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (nonvolatile; none touched)
+; Locals:         0 (leaf, no frame, no shadow)
+; Max read:       up to RDX bytes from [RCX] (input string; max 10)
+; Max write:      0 (returns value in RAX; no writes through ptr args)
 ; ---------------------------------------------------------------------------
 global parse_u32
 parse_u32:

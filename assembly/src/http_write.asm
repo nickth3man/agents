@@ -55,10 +55,17 @@ R503_LEN equ $-r503
 section .text
 
 ; ---------------------------------------------------------------------------
-; reason_phrase - map a status code to its reason phrase.
-; Inputs:  EAX = status code.
-; Outputs: RAX = phrase ptr, RDX = phrase len.
-; Clobbers: none (leaf, returns via registers).
+; reason_phrase - map HTTP status code to reason-phrase string
+; Purpose:        Returns a static, NUL-less reason-phrase string and its
+;                 length for the given HTTP status code. Falls back to
+;                 "Internal Server Error" (500) for unrecognized codes.
+; Inputs:         EAX = HTTP status code (u32)
+; Outputs:        RAX = ptr to static phrase (u8*), RDX = phrase length (usize)
+; Errors:         none (unknown codes map to 500 phrase)
+; Clobbers:       RAX,RDX (volatile return registers)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (nonvolatile)
+; Locals:         0 (leaf, no frame)
+; Max read:       0   Max write: 0 (returns via registers; no pointer derefs)
 ; ---------------------------------------------------------------------------
 reason_phrase:
     cmp     eax, 200
@@ -125,16 +132,45 @@ reason_phrase:
     mov     edx, R500_LEN
     ret
 
-; ---------------------------------------------------------------------------
-; http_respond - build and send a full HTTP/1.1 response, then it is the
-; caller's job to close the socket.
-; ---------------------------------------------------------------------------
-; Inputs:  RCX = socket, EDX = status code.
-; Uses:    globals resp_body_ptr/len and resp_ct_ptr/len (caller sets them).
-; Outputs: RAX = 0 on success, nonzero if a send failed.
-; Clobbers: volatile + saved rbx,r12,r13,r14.
-; Alignment: 5 pushes (rbp,rbx,r12,r13,r14) entry≡8 -> ≡0; sub 32 -> ≡0.
-; ---------------------------------------------------------------------------
+; ===========================================================================
+; http_respond - build and send a complete HTTP/1.1 response
+; Purpose:        Builds an HTTP/1.1 response in resp_hdr_buf (status line +
+;                 Content-Type + Content-Length + Connection/Cache-Control
+;                 headers), then sends headers + body via send_all. Caller
+;                 is responsible for closing the socket after return.
+; @param[in]      RCX - SOCKET client socket (valid, writable)
+; @param[in]      EDX - u16 HTTP status code (200, 400, 404, 405, 411, 413,
+;                       431, 500, 501, 502, 503)
+; @param[out]     RAX - u32 result: 0=success, 1=send failure
+; Inputs:         RCX = client socket (SOCKET), EDX = HTTP status code (u16);
+;                 operates on resp_body_ptr/len, resp_ct_ptr/len globals
+; Outputs:        RAX = 0 on success, nonzero if send_all failed;
+;                 HTTP response sent to client socket
+; Errors:         RAX = 1 on send failure (socket error propagated from send_all)
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15
+; Locals:         32 (shadow only; RBX=socket, R12=status, R13=header cursor,
+;                 R14=length scratch saved via push)
+; Max read:       resp_ct_len bytes from [resp_ct_ptr], resp_body_len bytes
+;                 from [resp_body_ptr], up to CAP_RESP_HDR from [resp_hdr_buf]
+;                 (via send_all); static strings from .data
+; Max write:      up to CAP_RESP_HDR bytes to [resp_hdr_buf] (via copy_bytes)
+; Precond:        resp_body_ptr/len, resp_ct_ptr/len set by caller
+;                 (route_request or resp_set_error); resp_hdr_buf valid for
+;                 CAP_RESP_HDR bytes
+; Stack:          SHADOW 32 + 4 nonvolatile saves (32 bytes),
+;                 RSP 16-aligned at CALL
+; Modified:       RAX,RCX,RDX,R8,R9,R10,R11
+; Initial inputs to registers: socket->RCX, status->EDX
+; Register assignments:
+;   status_line_phase: R13=resp_hdr_buf cursor; RCX=cursor, RDX=len,
+;                      R8=static_str for copy_bytes; EAX=status for
+;                      reason_phrase; R14=reason_len
+;   headers_phase:     R13=resp_hdr_buf cursor; copy_bytes for Content-Type
+;                      header + value, then Content-Length header + value
+;   body_phase:        RCX=socket, RDX=resp_hdr_buf/body_ptr,
+;                      R8=length for send_all; RAX=0/1 result
+; ===========================================================================
 global http_respond
 http_respond:
     push    rbp

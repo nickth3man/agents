@@ -26,6 +26,9 @@ extern health_json
 extern health_json_len
 extern gateway_start
 extern gw_state
+%ifdef DEV_MODE
+extern load_index_html
+%endif
 
 default rel
 
@@ -50,8 +53,18 @@ ERR_BODY_LEN  equ $-err_body
 section .text
 
 ; ---------------------------------------------------------------------------
-; set_response - fill the four response globals from register args. Leaf.
-; Inputs:  RCX=body_ptr, RDX=body_len, R8=ct_ptr, R9=ct_len. Preserves RAX.
+; set_response - store (body_ptr,len) and (ct_ptr,len) into resp_* globals
+; Purpose:        Stores the four HTTP response component globals from register
+;                 arguments. Leaf helper used by route_request and resp_set_error.
+; Inputs:         RCX=body_ptr (u8*), RDX=body_len (usize),
+;                 R8=ct_ptr (u8*), R9=ct_len (usize)
+; Outputs:        RAX=unmodified; resp_body_ptr, resp_body_len, resp_ct_ptr,
+;                 resp_ct_len globals set
+; Errors:         none
+; Clobbers:       none
+; Preserves:      all (including RAX)
+; Locals:         0 (leaf, no frame)
+; Max read:       0   Max write: 0 (writes to resp_* globals, not via ptr args)
 ; ---------------------------------------------------------------------------
 set_response:
     mov     [resp_body_ptr], rcx
@@ -61,8 +74,18 @@ set_response:
     ret
 
 ; ---------------------------------------------------------------------------
-; resp_set_error - set response globals to the generic error body. Preserves
-; EAX (so the caller can keep its status code).
+; resp_set_error - set response globals to the generic error body
+; Purpose:        Sets the four resp_* globals to the fixed "error" body with
+;                 text/plain content-type. Preserves RAX so the caller can keep
+;                 its HTTP status code.
+; Inputs:         none (operates on globals; RAX preserved for caller)
+; Outputs:        RAX=preserved; resp_body_ptr, resp_body_len, resp_ct_ptr,
+;                 resp_ct_len globals set
+; Errors:         none
+; Clobbers:       R11
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (nonvolatile); also RAX
+; Locals:         0 (leaf, no frame)
+; Max read:       0   Max write: 0 (writes to resp_* globals, not via ptr args)
 ; ---------------------------------------------------------------------------
 global resp_set_error
 resp_set_error:
@@ -75,8 +98,19 @@ resp_set_error:
     ret
 
 ; ---------------------------------------------------------------------------
-; path_is_known - 1 if path is /, /version, /health, or /chat. Returns RAX.
-; Alignment: push rbp + sub 32 -> aligned.
+; path_is_known - test if req_path matches one of the four known paths
+; Purpose:        Returns 1 if req_path is "/", "/version", "/health", or
+;                 "/chat"; 0 otherwise. Used by route_request to distinguish
+;                 404 from 405 without duplicating path comparison logic.
+; Inputs:         none (operates on req_path_ptr, req_path_len globals)
+; Outputs:        RAX=1 if path is known, 0 if unknown
+; Errors:         none
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11 (volatile; calls bytes_eq)
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15 (nonvolatile)
+; Locals:         32 (shadow only; push rbp + sub 32)
+; Max read:       req_path_len bytes from [req_path_ptr] (via bytes_eq)
+; Max write:      0 (writes only to RAX return register)
+; Precond:        req_path_ptr, req_path_len valid (set by http_parse)
 ; ---------------------------------------------------------------------------
 path_is_known:
     push    rbp
@@ -119,12 +153,39 @@ path_is_known:
     pop     rbp
     ret
 
-; ---------------------------------------------------------------------------
-; route_request - dispatch a parsed request to the right response.
-; Inputs:  none (operates on req_* globals, set by http_read/parse).
-; Outputs: RAX = HTTP status code; resp_* globals set for http_respond.
-; Clobbers: volatile. Alignment: push rbp + sub 32 -> aligned.
-; ---------------------------------------------------------------------------
+; ===========================================================================
+; route_request - dispatch parsed request to matching response handler
+; Purpose:        Reads req_* globals (populated by http_read/http_parse),
+;                 matches method + path, sets resp_* globals, and either
+;                 returns synchronously (static routes) or kicks the async
+;                 gateway for POST /chat. Single entry point for all HTTP
+;                 response selection.
+; @param[in]      none (operates on req_* globals)
+; @param[out]     RAX - u16 HTTP status (200, 404, 405, 411, 503)
+; Inputs:         none; operates on req_method_ptr, req_method_len,
+;                 req_path_ptr, req_path_len, req_has_cl,
+;                 req_content_length, req_header_end, recv_buf globals
+; Outputs:        RAX = HTTP status; resp_body_ptr/len, resp_ct_ptr/len set
+; Errors:         RAX in {404,405,411,503}; err_body set via set_response
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15
+; Locals:         32 (shadow only; push rbp + sub 32)
+; Max read:       req_path_len bytes from [req_path_ptr], req_method_len from
+;                 [req_method_ptr] (via bytes_eq); CAP_CHAT_BODY from
+;                 [recv_buf + req_header_end] (forwarded to gateway_start)
+; Max write:      0 (writes go to resp_* globals, not caller buffers)
+; Precond:        http_parse complete; req_path_len, req_method_len valid;
+;                 req_header_end set; recv_buf populated
+; Stack:          SHADOW 32, single CALL to gateway_start at aligned RSP
+; Modified:       RAX,RCX,RDX,R8,R9,R10,R11
+; Initial inputs to registers: none (operates on globals)
+; Register assignments:
+;   match_phase:  RCX=method_ptr, RDX=method_len, R8=candidate, R9=cand_len
+;                 (for bytes_eq); then RCX=path_ptr, RDX=path_len
+;   route_phase:  RCX=body_ptr, RDX=body_len, R8=ct_ptr, R9=ct_len
+;                 (for set_response); or RCX=body_ptr, RDX=body_len
+;                 for gateway_start; RAX=HTTP status for error paths
+; ===========================================================================
 global route_request
 route_request:
     push    rbp
@@ -213,6 +274,18 @@ route_request:
     jmp     .rout
     ; ---- 200 responses ----
 .serve_root:
+%ifdef DEV_MODE
+    call    load_index_html          ; RAX=ptr, RDX=len, CF=1=error
+    jc      .serve_root_embedded
+    mov     rcx, rax                 ; body ptr from load_index_html
+    ; RDX already = bytes read (body len)
+    lea     r8,  [rel ct_html]
+    mov     r9,  CT_HTML_LEN
+    call    set_response
+    mov     eax, HTTP_200
+    jmp     .rout
+.serve_root_embedded:
+%endif
     lea     rcx, [rel chat_html]
     mov     rdx, [rel chat_html_len]
     lea     r8,  [rel ct_html]

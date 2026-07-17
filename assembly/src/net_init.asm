@@ -39,14 +39,39 @@ S_CLEAN_LEN   equ $-s_clean
 
 section .text
 
-; ---------------------------------------------------------------------------
-; net_init - bring up Winsock 2.2 and the loopback listener.
-; Inputs:  none.
-; Outputs: RAX = listening SOCKET on success.
-;          On fatal error: logs and exits the process (never returns).
-; Clobbers: volatile + rbx (saved).
-; Alignment: push rbp/rbx (entry≡8 -> ≡8); sub 40 -> ≡0. OK.
-; ---------------------------------------------------------------------------
+; ===========================================================================
+; net_init - bring up Winsock 2.2 and the loopback listener
+; Purpose:        Initialises Winsock via WSAStartup, creates a TCP socket,
+;                 binds to 127.0.0.1:8080 with SO_EXCLUSIVEADDRUSE, begins
+;                 listening (backlog=64), and stores the listen socket in
+;                 [listen_sock] and RBX. On any fatal error, logs the stage
+;                 name and calls net_shutdown(1) to exit the process.
+; @param[out]     RAX - SOCKET listening socket on success; error never returns
+; Inputs:         none (operates on globals: wsadata, listen_addr, excl_enable)
+; Outputs:        RAX=SOCKET (listen_sock); [listen_sock] set globally
+; Errors:         On WSAStartup/socket/bind/listen failure: logs via
+;                 log_err/log_err_code then calls net_shutdown(1) (exits)
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15
+; Locals:         40 (32 shadow + 8 for [rsp+0x20]=optlen)
+; Max read:       0 (no caller buffers read)
+; Max write:      0 (no caller buffers written; globals listen_addr, listen_sock)
+; Precond:        Winsock not yet initialised; 127.0.0.1:8080 available;
+;                 wsadata, listen_sock, excl_enable globals exist
+; Stack:          2 pushes (RBP,RBX) + sub 40; RSP 16-aligned at CALL
+; Modified:       RAX,RCX,RDX,R8,R9,R10,R11
+; Initial inputs to registers: none
+; Register assignments:
+;   wsastartup_phase: RCX=WINSOCK_VER, RDX=&wsadata, RAX=WSAStartup result
+;   socket_phase:     RCX=AF_INET, RDX=SOCK_STREAM, R8=IPPROTO_TCP,
+;                     RAX=SOCKET -> RBX and [listen_sock]
+;   setopt_phase:     RCX=RBX, RDX=SOL_SOCKET, R8D=SO_EXCLUSIVEADDRUSE,
+;                     R9=&excl_enable, [rsp+0x20]=4, RAX=setsockopt result
+;   bind_phase:       RCX=RBX, RDX=&listen_addr, R8=SOCKADDR_IN_SIZE,
+;                     RAX=bind result
+;   listen_phase:     RCX=RBX, RDX=64 (backlog), RAX=listen result
+;   ok_phase:         RAX=RBX (return listen socket)
+; ===========================================================================
 global net_init
 net_init:
     push    rbp
@@ -126,13 +151,31 @@ net_init:
     pop     rbp
     ret
 
-; ---------------------------------------------------------------------------
-; net_shutdown - orderly shutdown: close listener, WSACleanup, exit.
-; Inputs:  RCX = process exit code.
-; Outputs: never returns (calls ExitProcess).
-; Clobbers: volatile + rbx (saved, though we never return).
-; Alignment: push rbp/rbx (entry≡8 -> ≡8); sub 40 -> ≡0. OK.
-; ---------------------------------------------------------------------------
+; ===========================================================================
+; net_shutdown - orderly shutdown: close listener, WSACleanup, exit
+; Purpose:        Closes [listen_sock] if valid, calls WSACleanup, then
+;                 terminates the process via ExitProcess with the given exit
+;                 code. Designed to be called from net_init error paths and
+;                 from start.asm on graceful shutdown.
+; @param[in]      RCX - int exit_code: process exit code for ExitProcess
+; Inputs:         RCX=int exit_code; reads [listen_sock] global
+; Outputs:        never returns (calls ExitProcess)
+; Errors:         never returns (ExitProcess terminates the process)
+; Clobbers:       RAX,RCX,RDX,R8,R9,R10,R11
+; Preserves:      RBX,RBP,RDI,RSI,R12-R15
+; Locals:         40 (32 shadow + 8 alignment padding)
+; Max read:       8 bytes from [listen_sock]
+; Max write:      0 (no caller buffers written)
+; Precond:        net_init may or may not have completed; listen_sock is
+;                 either INVALID_SOCKET or a valid SOCKET from net_init
+; Stack:          2 pushes (RBP,RBX) + sub 40; RSP 16-aligned at CALL
+; Modified:       RAX,RCX,RDX,R8,R9,R10,R11
+; Initial inputs to registers: exit_code->RCX
+; Register assignments:
+;   closesocket_phase: RCX=[listen_sock]; skip close if INVALID_SOCKET
+;   cleanup_phase:     RCX=exit_code saved in RBX; calls WSACleanup
+;   exit_phase:        RCX=RBX (exit code); calls ExitProcess (no return)
+; ===========================================================================
 global net_shutdown
 net_shutdown:
     push    rbp
