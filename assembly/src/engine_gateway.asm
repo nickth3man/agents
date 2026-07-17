@@ -121,6 +121,15 @@ S_OVF_LEN equ $-s_ovf
 
 section .text
 
+%macro close_winhttp_handle 1
+    mov     rcx, [rel %1]
+    test    rcx, rcx
+    jz      %%closed
+    call    WinHttpCloseHandle
+    mov     qword [rel %1], 0
+%%closed:
+%endmacro
+
 ; =========================================================================
 ; append_raw / append_json / append_wide / hex_nibble / decode_content
 ; Unchanged from the synchronous implementation.
@@ -559,29 +568,23 @@ gateway_start:
     jmp     .out
 
 .busy:
-    xor     eax, eax
-    inc     eax                     ; 1: busy
-    jmp     .out
+    jmp     .return_error           ; 1: busy
 .fail_key:
     lea     rcx, [rel s_noapikey]
     mov     rdx, S_NOAPIKEY_LEN
     call    log_err
-    xor     eax, eax
-    inc     eax
-    jmp     .out
+    jmp     .return_error
 .fail_model:
     lea     rcx, [rel s_nomodel]
     mov     rdx, S_NOMODEL_LEN
     call    log_err
-    xor     eax, eax
-    inc     eax
-    jmp     .out
+    jmp     .return_error
 .fail_ovf:
     lea     rcx, [rel s_ovf]
     mov     rdx, S_OVF_LEN
     call    log_err
-    xor     eax, eax
-    inc     eax
+.return_error:
+    mov     eax, 1
 .out:
     add     rsp, 40
     pop     r14
@@ -739,14 +742,11 @@ global gateway_advance
 gateway_advance:
     push    rbp
     mov     rbp, rsp
-    push    rbx
     push    rsi
     push    rdi
-    push    r12
     push    r13
     push    r14
-    push    r15
-    sub     rsp, 72                 ; shadow + work space (+8 for stack alignment)
+    sub     rsp, 64                 ; shadow + work space; call-aligned
 
 .advance_loop:
     ; Check for async errors set by callback (TLS failure, etc.)
@@ -829,12 +829,7 @@ gateway_advance:
 ; -----------------------------------------------------------------------
 .st_open_request:
     ; Close previous request handle if any (stage 2+ reuse)
-    mov     rcx, [rel gw_hRequest]
-    test    rcx, rcx
-    jz      .no_prev_req
-    call    WinHttpCloseHandle
-    mov     qword [rel gw_hRequest], 0
-.no_prev_req:
+    close_winhttp_handle gw_hRequest
 
     ; WinHttpOpenRequest
     mov     rcx, [rel gw_hConnect]
@@ -987,12 +982,7 @@ gateway_advance:
     jc      .fail_ovf
 
     ; Close request handle only (reuse session+connect)
-    mov     rcx, [rel gw_hRequest]
-    test    rcx, rcx
-    jz      .no_req_close
-    call    WinHttpCloseHandle
-    mov     qword [rel gw_hRequest], 0
-.no_req_close:
+    close_winhttp_handle gw_hRequest
 
     ; Go create a new request + send
     mov     dword [rel gw_state], GW_OPEN_REQUEST
@@ -1005,24 +995,9 @@ gateway_advance:
     ; Note: a late READ_COMPLETE callback for a previous read may still
     ; fire; it will write gw_read_len and signal gw_event, but the event
     ; loop will see GW_IDLE and return to WaitForMultipleObjects safely.
-    mov     rcx, [rel gw_hRequest]
-    test    rcx, rcx
-    jz      .done_hreq
-    call    WinHttpCloseHandle
-    mov     qword [rel gw_hRequest], 0
-.done_hreq:
-    mov     rcx, [rel gw_hConnect]
-    test    rcx, rcx
-    jz      .done_hcon
-    call    WinHttpCloseHandle
-    mov     qword [rel gw_hConnect], 0
-.done_hcon:
-    mov     rcx, [rel gw_hSession]
-    test    rcx, rcx
-    jz      .done_hses
-    call    WinHttpCloseHandle
-    mov     qword [rel gw_hSession], 0
-.done_hses:
+    close_winhttp_handle gw_hRequest
+    close_winhttp_handle gw_hConnect
+    close_winhttp_handle gw_hSession
     mov     dword [rel gw_state], GW_IDLE
     mov     dword [rel gw_err_code], 0
     mov     eax, GW_RET_DONE                ; 200
@@ -1036,24 +1011,9 @@ gateway_advance:
     ; cannot leave stale resp_* globals pointing to partial data.
     call    resp_set_error
 
-    mov     rcx, [rel gw_hRequest]
-    test    rcx, rcx
-    jz      .tc_hreq
-    call    WinHttpCloseHandle
-    mov     qword [rel gw_hRequest], 0
-.tc_hreq:
-    mov     rcx, [rel gw_hConnect]
-    test    rcx, rcx
-    jz      .tc_hcon
-    call    WinHttpCloseHandle
-    mov     qword [rel gw_hConnect], 0
-.tc_hcon:
-    mov     rcx, [rel gw_hSession]
-    test    rcx, rcx
-    jz      .tc_hses
-    call    WinHttpCloseHandle
-    mov     qword [rel gw_hSession], 0
-.tc_hses:
+    close_winhttp_handle gw_hRequest
+    close_winhttp_handle gw_hConnect
+    close_winhttp_handle gw_hSession
     mov     dword [rel gw_state], GW_IDLE
     mov     dword [rel gw_err_code], 0      ; clear error for next gateway round
     mov     eax, GW_RET_FAIL                ; 502
@@ -1111,14 +1071,11 @@ gateway_advance:
     jmp     .advance_loop
 
 .out:
-    add     rsp, 72
-    pop     r15
+    add     rsp, 64
     pop     r14
     pop     r13
-    pop     r12
     pop     rdi
     pop     rsi
-    pop     rbx
     pop     rbp
     ret
 
@@ -1143,10 +1100,8 @@ gw_callback:
     push    rbp
     mov     rbp, rsp
     push    rbx
-    push    rsi
-    push    rdi
     push    r12                     ; save lpvStatusInformation before any call
-    sub     rsp, 32                 ; shadow space; five pushes leave RSP call-aligned
+    sub     rsp, 32                 ; shadow space; three pushes leave RSP call-aligned
 
     mov     ebx, r8d                ; status (non-volatile)
     mov     r12, r9                 ; lpvStatusInformation (save before any call)
@@ -1194,8 +1149,6 @@ gw_callback:
 .done:
     add     rsp, 32
     pop     r12
-    pop     rdi
-    pop     rsi
     pop     rbx
     pop     rbp
     ret

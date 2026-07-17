@@ -557,19 +557,28 @@ globals_to_slot:
 ; Does NOT close socket or change state.
 ; -----------------------------------------------------------------------
 disassociate_slot:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 40
+
     slot_addr
-    mov     rcx, [r10 + ClientSlot.sock]
+    mov     rbx, r10
+    mov     rcx, [rbx + ClientSlot.sock]
     test    rcx, rcx
     jz      .ds_ret
     xor     edx, edx
     xor     r8d, r8d
     call    WSAEventSelect
-    mov     rcx, [r10 + ClientSlot.sock]
+    mov     rcx, [rbx + ClientSlot.sock]
     mov     edx, FIONBIO
     lea     r8,  [fionbio_arg]
     mov     dword [r8], 0
     call    ioctlsocket
 .ds_ret:
+    add     rsp, 40
+    pop     rbx
+    pop     rbp
     ret
 
 ; -----------------------------------------------------------------------
@@ -579,32 +588,35 @@ disassociate_slot:
 free_slot:
     push    rbp
     mov     rbp, rsp
-    sub     rsp, 32
+    push    rbx
+    sub     rsp, 40
 
     slot_addr
-    mov     rcx, [r10 + ClientSlot.sock]
+    mov     rbx, r10
+    mov     rcx, [rbx + ClientSlot.sock]
     test    rcx, rcx
     jz      .fs_no_sock
     mov     edx, SD_SEND
     call    shutdown
-    mov     rcx, [r10 + ClientSlot.sock]
+    mov     rcx, [rbx + ClientSlot.sock]
     call    closesocket
 .fs_no_sock:
-    mov     qword [r10 + ClientSlot.sock], 0
-    mov     dword [r10 + ClientSlot.state], CS_FREE
+    mov     qword [rbx + ClientSlot.sock], 0
+    mov     dword [rbx + ClientSlot.state], CS_FREE
     ; zero req fields (not strictly necessary, but hygienic)
-    mov     qword [r10 + ClientSlot.req_used], 0
-    mov     qword [r10 + ClientSlot.req_header_end], 0
-    mov     dword [r10 + ClientSlot.req_has_cl], 0
-    mov     dword [r10 + ClientSlot.req_has_te], 0
-    mov     qword [r10 + ClientSlot.req_content_length], 0
-    mov     dword [r10 + ClientSlot.req_cl_count], 0
-    mov     qword [r10 + ClientSlot.req_method_ptr], 0
-    mov     qword [r10 + ClientSlot.req_method_len], 0
-    mov     qword [r10 + ClientSlot.req_path_ptr], 0
-    mov     qword [r10 + ClientSlot.req_path_len], 0
+    mov     qword [rbx + ClientSlot.req_used], 0
+    mov     qword [rbx + ClientSlot.req_header_end], 0
+    mov     dword [rbx + ClientSlot.req_has_cl], 0
+    mov     dword [rbx + ClientSlot.req_has_te], 0
+    mov     qword [rbx + ClientSlot.req_content_length], 0
+    mov     dword [rbx + ClientSlot.req_cl_count], 0
+    mov     qword [rbx + ClientSlot.req_method_ptr], 0
+    mov     qword [rbx + ClientSlot.req_method_len], 0
+    mov     qword [rbx + ClientSlot.req_path_ptr], 0
+    mov     qword [rbx + ClientSlot.req_path_len], 0
 
-    add     rsp, 32
+    add     rsp, 40
+    pop     rbx
     pop     rbp
     ret
 
@@ -660,6 +672,7 @@ error_and_free_slot:
     mov     eax, r12d
     call    resp_set_error
 
+    mov     ecx, ebx
     slot_addr
     mov     rcx, [r10 + ClientSlot.sock]
     mov     edx, r12d
