@@ -30,6 +30,7 @@ if (-not $env:OPENROUTER_MODEL -or -not $env:OPENROUTER_API_KEY) {
 
 # Start the assembly server detached, hidden window.
 $sp = Start-Process -FilePath $Exe -WindowStyle Hidden -PassThru `
+     -WorkingDirectory $root `
      -RedirectStandardOutput (Join-Path $logDir 'server.out.log') `
      -RedirectStandardError  (Join-Path $logDir 'server.err.log')
 Start-Sleep -Milliseconds 700

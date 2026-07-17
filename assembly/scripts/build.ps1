@@ -194,6 +194,7 @@ function Invoke-Build {
                                  '-I',$repoRoot,
                                  '-I',(Join-Path $repoRoot 'generated'),
                    ("-DDEBUG=" + (& { if ($dbg) {'1'} else {'0'} })))
+    if ($dbg) { $nasmFlags += '-DDEV_MODE' }
 
     # --- assemble every src/*.asm (fail fast on first error) ---------------
     $allObj = @()

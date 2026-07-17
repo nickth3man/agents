@@ -16,6 +16,7 @@
 %define CAP_HEADERS      6144          ; max header bytes
 %define CAP_CHAT_BODY    2048          ; max /chat body
 %define CAP_RESP_HDR     512           ; response-header workspace
+%define CAP_INDEX        65536         ; index.html disk-read buffer (DEV_MODE)
 %define CAP_LOG_LINE     512           ; one structured log line
 %define CAP_GATEWAY_REQ  16384         ; OpenRouter JSON request / decoded reply
 %define CAP_GATEWAY_RESP 65536         ; bounded OpenRouter JSON response
