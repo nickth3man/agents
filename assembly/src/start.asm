@@ -109,6 +109,14 @@ global start
 start:
     and     rsp, -16
     sub     rsp, 128                     ; scratch workspace
+
+    ; Named offsets within the 128-byte scratch area (0x50 and 0x58 are reused
+    ; across distinct phases within the same poll iteration):
+    RSP_POLL_RESULT equ 0x50             ; [rsp+0x50]: read_more_request return (0=complete,
+                                         ;   1=need more, 2=wouldblock, >=400 error);
+                                         ;   later reused for route_request HTTP status.
+    RSP_GW_SNAPSHOT equ 0x58             ; [rsp+0x58]: gw_state snapshot taken before
+                                         ;   route_request, to detect async /chat start.
     lea     rcx, [banner]
     mov     rdx, BANNER_LEN
     call    log_str
@@ -278,14 +286,14 @@ start:
     slot_addr
     mov     rcx, [r10 + ClientSlot.sock]
     call    read_more_request
-    mov     [rsp+0x50], eax              ; save return code
+    mov     [rsp+RSP_POLL_RESULT], eax   ; save return code
 
     ; ---- globals_to_slot: copy back ----
     mov     ecx, [poll_slot_idx]
     call    globals_to_slot
 
     ; ---- dispatch result ----
-    mov     eax, [rsp+0x50]
+    mov     eax, [rsp+RSP_POLL_RESULT]
     cmp     eax, 0
     je      .poll_complete
     cmp     eax, 1
@@ -304,14 +312,14 @@ start:
 
     ; detect if /chat starts an async gateway round
     mov     eax, [gw_state]
-    mov     [rsp+0x58], eax              ; pre-route gw_state
+    mov     [rsp+RSP_GW_SNAPSHOT], eax   ; pre-route gw_state
 
     call    debug_canaries_check
     test    eax, eax
     jnz     .poll_canary
 
     call    route_request                ; returns status in eax
-    mov     [rsp+0x50], eax              ; status code
+    mov     [rsp+RSP_POLL_RESULT], eax   ; status code
 
     call    debug_canaries_check
     test    eax, eax
@@ -319,7 +327,7 @@ start:
 
     ; Did route_request start an async gateway?
     mov     edx, [gw_state]
-    cmp     edx, [rsp+0x58]
+    cmp     edx, [rsp+RSP_GW_SNAPSHOT]
     je      .poll_sync_respond
 
     ; ---- async /chat deferral ----
@@ -336,7 +344,7 @@ start:
 
 .poll_sync_respond:
     mov     ecx, [poll_slot_idx]
-    mov     edx, [rsp+0x50]              ; status code
+    mov     edx, [rsp+RSP_POLL_RESULT]   ; status code
     call    respond_and_free_slot
     jmp     .poll_next
 

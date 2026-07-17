@@ -17,6 +17,7 @@ extern req_path_ptr
 extern req_path_len
 extern mem_find
 extern mem_find_ci
+extern bytes_eq
 extern parse_u32
 
 default rel
@@ -28,8 +29,8 @@ cl_name:  db "content-length:"
 CL_NAME_LEN  equ $-cl_name          ; 15
 te_name:  db "transfer-encoding:"
 TE_NAME_LEN  equ $-te_name          ; 18
-dbg_len:  db "len"
-DBG_LEN_LEN equ $-dbg_len
+http11:   db "HTTP/1.1"
+HTTP11_LEN equ $-http11
 
 section .text
 
@@ -166,38 +167,17 @@ http_parse:
     cmp     cl, '/'
     jne     .err400
     ; --- version span = [sp2+1, rli); accept exactly HTTP/1.1 ---
-    mov     rax, rbx
-    sub     rax, r13
-    dec     rax                     ; version len
-    cmp     rax, 8
-    jne     .err400
-    lea     r10, [rel recv_buf]
-    add     r10, r13
-    inc     r10                     ; version ptr = recv_buf + sp2 + 1
-    mov     cl, [r10+0]  ; cmp cl,'H' is implicit in next compare
-    cmp     cl, 'H'
-    jne     .err400
-    mov     cl, [r10+1]
-    cmp     cl, 'T'
-    jne     .err400
-    mov     cl, [r10+2]
-    cmp     cl, 'T'
-    jne     .err400
-    mov     cl, [r10+3]
-    cmp     cl, 'P'
-    jne     .err400
-    mov     cl, [r10+4]
-    cmp     cl, '/'
-    jne     .err400
-    mov     cl, [r10+5]
-    cmp     cl, '1'
-    jne     .err400
-    mov     cl, [r10+6]
-    cmp     cl, '.'
-    jne     .err400
-    mov     cl, [r10+7]
-    cmp     cl, '1'
-    jne     .err400
+    lea     rcx, [rel recv_buf]
+    add     rcx, r13
+    inc     rcx                     ; version ptr = recv_buf + sp2 + 1
+    mov     rdx, rbx
+    sub     rdx, r13
+    dec     rdx                     ; version len = rli - sp2 - 1
+    lea     r8, [rel http11]        ; expected string
+    mov     r9, HTTP11_LEN          ; expected len
+    call    bytes_eq
+    test    rax, rax
+    jz      .err400
     ; ===================== Content-Length =====================
     lea     rcx, [cl_name]
     mov     rdx, CL_NAME_LEN
